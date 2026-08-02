@@ -76,6 +76,7 @@ class FakeClient:
         *,
         connect_error: Exception | None = None,
         loop_start_error: Exception | None = None,
+        tls_set_error: Exception | None = None,
         loop_start_entered: threading.Event | None = None,
         loop_start_release: threading.Event | None = None,
         synchronous_connect: bool = False,
@@ -84,6 +85,7 @@ class FakeClient:
     ) -> None:
         self.connect_error = connect_error
         self.loop_start_error = loop_start_error
+        self.tls_set_error = tls_set_error
         self.loop_start_entered = loop_start_entered
         self.loop_start_release = loop_start_release
         self.synchronous_connect = synchronous_connect
@@ -92,6 +94,9 @@ class FakeClient:
 
         self.constructor_kwargs: dict[str, Any] = {}
         self.credentials: tuple[str, str | None] | None = None
+        self.tls_set_calls = 0
+        self.tls_insecure_set_calls: list[bool] = []
+        self.call_order: list[str] = []
         self.connect_calls: list[tuple[str, int, int]] = []
         self.loop_start_calls = 0
         self.subscribe_calls: list[tuple[str, int]] = []
@@ -102,11 +107,21 @@ class FakeClient:
         self.on_disconnect: Callable[..., None] | None = None
         self.on_message: Callable[..., None] | None = None
 
+    def tls_set(self) -> None:
+        self.tls_set_calls += 1
+        self.call_order.append("tls_set")
+        if self.tls_set_error is not None:
+            raise self.tls_set_error
+
+    def tls_insecure_set(self, value: bool) -> None:
+        self.tls_insecure_set_calls.append(value)
+        self.call_order.append("tls_insecure_set")
     def username_pw_set(self, username: str, password: str | None) -> None:
         self.credentials = (username, password)
 
     def connect(self, host: str, port: int, *, keepalive: int) -> None:
         self.connect_calls.append((host, port, keepalive))
+        self.call_order.append("connect")
         if self.connect_error is not None:
             raise self.connect_error
 
@@ -559,6 +574,59 @@ class GritLiveMqttTests(unittest.TestCase):
         fake.subscribe_result = BadReasonCode()
         fake.on_connect(fake, None, None, 0)
         client.stop()
+
+    def test_tls_disabled_invokes_no_tls_methods(self) -> None:
+        factory = FakeClientFactory()
+        client = self._new_client(use_tls=False)
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        fake = factory.instances[0]
+        self.assertEqual(fake.tls_set_calls, 0)
+        self.assertEqual(fake.tls_insecure_set_calls, [])
+        client.stop()
+
+    def test_tls_secure_defaults_are_configured_before_connect(self) -> None:
+        factory = FakeClientFactory()
+        client = self._new_client(use_tls=True)
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        fake = factory.instances[0]
+        self.assertEqual(fake.tls_set_calls, 1)
+        self.assertEqual(fake.tls_insecure_set_calls, [])
+        self.assertEqual(fake.call_order[:2], ["tls_set", "connect"])
+        client.stop()
+
+    def test_tls_verification_can_be_explicitly_disabled(self) -> None:
+        factory = FakeClientFactory()
+        client = self._new_client(use_tls=True, verify_tls=False)
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        fake = factory.instances[0]
+        self.assertEqual(fake.tls_set_calls, 1)
+        self.assertEqual(fake.tls_insecure_set_calls, [True])
+        self.assertEqual(
+            fake.call_order[:3],
+            ["tls_set", "tls_insecure_set", "connect"],
+        )
+        client.stop()
+
+    def test_tls_configuration_failure_cleans_partial_client(self) -> None:
+        fake = FakeClient(
+            tls_set_error=RuntimeError("fabricated TLS setup failure")
+        )
+        factory = FakeClientFactory([fake])
+        client = self._new_client(use_tls=True)
+        with self._paho_patch(factory):
+            self.assertFalse(client.start())
+        self.assertEqual(fake.connect_calls, [])
+        self.assertEqual(fake.disconnect_calls, 1)
+        self.assertEqual(fake.loop_stop_calls, 0)
+        self._assert_stopped(client)
+
+    def test_tls_options_require_booleans(self) -> None:
+        for kwargs in ({"use_tls": 1}, {"verify_tls": 0}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(TypeError):
+                self._new_client(**kwargs)
 
     def test_logs_exclude_connection_and_message_values(self) -> None:
         payload_marker = "fabricated-payload-marker"

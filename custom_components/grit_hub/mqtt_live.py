@@ -50,6 +50,8 @@ class GritLiveMqtt:
         username: str | None = None,
         password: str | None = None,
         keepalive: int = MQTT_KEEPALIVE,
+        use_tls: bool = False,
+        verify_tls: bool = True,
     ) -> None:
         """Initialize connection settings without connecting to the broker."""
         if not isinstance(host, str) or not host.strip():
@@ -66,6 +68,10 @@ class GritLiveMqtt:
             or not 1 <= keepalive <= 65535
         ):
             raise ValueError("MQTT keepalive must be between 1 and 65535")
+        if not isinstance(use_tls, bool):
+            raise TypeError("MQTT TLS setting must be a boolean")
+        if not isinstance(verify_tls, bool):
+            raise TypeError("MQTT TLS verification setting must be a boolean")
         if username is not None and not isinstance(username, str):
             raise TypeError("MQTT username must be a string or None")
         if password is not None and not isinstance(password, str):
@@ -80,6 +86,8 @@ class GritLiveMqtt:
         self._username = username
         self._password = password
         self._keepalive = keepalive
+        self._use_tls = use_tls
+        self._verify_tls = verify_tls
         self._message_callback = message_callback
 
         self._client: Any | None = None
@@ -123,6 +131,10 @@ class GritLiveMqtt:
             client.on_disconnect = self._on_disconnect
             client.on_message = self._on_message
 
+            if self._use_tls:
+                client.tls_set()
+                if not self._verify_tls:
+                    client.tls_insecure_set(True)
             if self._start_was_cancelled(client):
                 self._abort_start(client, loop_started)
                 return False

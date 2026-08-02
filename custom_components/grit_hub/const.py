@@ -3,12 +3,26 @@ from __future__ import annotations
 
 DOMAIN = "grit_hub"
 DEFAULT_NAME = "GRIT Hub"
+DEFAULT_MQTT_PORT = 1883
+DEFAULT_MQTT_KEEPALIVE = 60
+
+MAX_MQTT_HOST_LENGTH = 253
+MAX_MQTT_HUB_ID_LENGTH = 128
+MAX_MQTT_USERNAME_LENGTH = 128
 DEFAULT_SCAN_INTERVAL = 30
 
 CONF_BASE_URL = "base_url"
 CONF_TOKEN = "token"
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_SCAN_INTERVAL = "scan_interval"
+CONF_MQTT_HOST = "mqtt_host"
+CONF_MQTT_PORT = "mqtt_port"
+CONF_MQTT_HUB_ID = "mqtt_hub_id"
+CONF_MQTT_USERNAME = "mqtt_username"
+CONF_MQTT_PASSWORD = "mqtt_password"
+CONF_MQTT_USE_TLS = "mqtt_use_tls"
+CONF_MQTT_VERIFY_TLS = "mqtt_verify_tls"
+CONF_MQTT_KEEPALIVE = "mqtt_keepalive"
 
 PLATFORMS = ["sensor", "binary_sensor", "switch", "cover", "button"]
 
