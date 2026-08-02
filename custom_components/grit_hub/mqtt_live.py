@@ -27,6 +27,7 @@ MAX_MQTT_TOPIC_COMPONENT_LENGTH = 128
 GritMqttMessageCallback: TypeAlias = Callable[
     [str, str, str, str, dict[str, Any]], None
 ]
+GritMqttConnectionStateCallback: TypeAlias = Callable[[bool], None]
 
 
 class _LifecycleState(Enum):
@@ -52,6 +53,7 @@ class GritLiveMqtt:
         keepalive: int = MQTT_KEEPALIVE,
         use_tls: bool = False,
         verify_tls: bool = True,
+        connection_state_callback: GritMqttConnectionStateCallback | None = None,
     ) -> None:
         """Initialize connection settings without connecting to the broker."""
         if not isinstance(host, str) or not host.strip():
@@ -80,6 +82,10 @@ class GritLiveMqtt:
             raise ValueError("MQTT password requires a username")
         if not callable(message_callback):
             raise TypeError("MQTT message callback must be callable")
+        if connection_state_callback is not None and not callable(
+            connection_state_callback
+        ):
+            raise TypeError("MQTT connection-state callback must be callable")
 
         self._host = host.strip()
         self._port = port
@@ -89,16 +95,18 @@ class GritLiveMqtt:
         self._use_tls = use_tls
         self._verify_tls = verify_tls
         self._message_callback = message_callback
+        self._connection_state_callback = connection_state_callback
 
         self._client: Any | None = None
         self._network_loop_started = False
         self._connected = False
+        self._reported_connection_state: bool | None = None
         self._state = _LifecycleState.STOPPED
         self._state_condition = threading.Condition()
 
     @property
     def connected(self) -> bool:
-        """Return whether the broker has acknowledged the connection."""
+        """Return whether the broker connection and subscription are active."""
         with self._state_condition:
             return self._connected
 
@@ -108,6 +116,7 @@ class GritLiveMqtt:
             if self._state is not _LifecycleState.STOPPED:
                 return False
             self._state = _LifecycleState.STARTING
+            self._reported_connection_state = None
 
         client: Any | None = None
         loop_started = False
@@ -275,6 +284,28 @@ class GritLiveMqtt:
                 _LifecycleState.RUNNING,
             )
 
+    def _set_connection_state(self, client: Any, connected: bool) -> bool:
+        """Update and report state for the current client without duplicates."""
+        callback: GritMqttConnectionStateCallback | None = None
+        with self._state_condition:
+            if self._client is not client or self._state not in (
+                _LifecycleState.STARTING,
+                _LifecycleState.RUNNING,
+            ):
+                return False
+            self._connected = connected
+            if self._reported_connection_state == connected:
+                return True
+            self._reported_connection_state = connected
+            callback = self._connection_state_callback
+
+        if callback is not None:
+            try:
+                callback(connected)
+            except Exception:
+                _LOGGER.error("GRIT MQTT connection-state callback failed")
+        return True
+
     def _on_connect(
         self,
         client: Any,
@@ -284,29 +315,27 @@ class GritLiveMqtt:
     ) -> None:
         """Subscribe after a successful initial connection or reconnect."""
         success = self._reason_code_is_success(reason_code)
-        with self._state_condition:
-            if self._client is not client or self._state not in (
-                _LifecycleState.STARTING,
-                _LifecycleState.RUNNING,
-            ):
-                return
-            self._connected = success
-
+        if not self._client_is_current(client):
+            return
         if not success:
-            _LOGGER.warning("GRIT MQTT connection rejected")
+            if self._set_connection_state(client, False):
+                _LOGGER.warning("GRIT MQTT connection rejected")
             return
 
         try:
             result, _message_id = client.subscribe(MQTT_TOPIC, qos=MQTT_QOS)
         except Exception:  # Paho implementations vary.
-            if self._client_is_current(client):
+            if self._set_connection_state(client, False):
                 _LOGGER.warning("GRIT MQTT subscription failed")
             return
 
         if not self._client_is_current(client):
             return
         if not self._reason_code_is_success(result):
-            _LOGGER.warning("GRIT MQTT subscription failed")
+            if self._set_connection_state(client, False):
+                _LOGGER.warning("GRIT MQTT subscription failed")
+            return
+        if not self._set_connection_state(client, True):
             return
 
         _LOGGER.info("GRIT MQTT connection established")
@@ -319,14 +348,8 @@ class GritLiveMqtt:
     ) -> None:
         """Record broker disconnection without logging endpoint details."""
         success = self._reason_code_is_success(reason_code)
-        with self._state_condition:
-            if self._client is not client or self._state not in (
-                _LifecycleState.STARTING,
-                _LifecycleState.RUNNING,
-            ):
-                return
-            self._connected = False
-
+        if not self._set_connection_state(client, False):
+            return
         if success:
             _LOGGER.info("GRIT MQTT connection closed")
         else:

@@ -298,6 +298,54 @@ class GritLiveMqttTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             self._new_client(callback="not-callable")
 
+    def test_connection_state_callback_requires_callable(self) -> None:
+        with self.assertRaises(TypeError):
+            self._new_client(connection_state_callback="not-callable")
+
+    def test_connection_state_reports_only_after_subscription(self) -> None:
+        states: list[bool] = []
+        fake = FakeClient()
+        factory = FakeClientFactory([fake])
+        client = self._new_client(connection_state_callback=states.append)
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+
+        self.assertEqual(states, [])
+        fake.on_connect(fake, None, None, 0)
+        self.assertEqual(states, [True])
+        self.assertTrue(client.connected)
+        fake.on_connect(fake, None, None, 0)
+        self.assertEqual(states, [True])
+        fake.on_disconnect(fake, None, 1)
+        fake.on_disconnect(fake, None, 1)
+        self.assertEqual(states, [True, False])
+        self.assertFalse(client.connected)
+        client.stop()
+
+    def test_connection_rejection_reports_not_connected(self) -> None:
+        states: list[bool] = []
+        fake = FakeClient()
+        factory = FakeClientFactory([fake])
+        client = self._new_client(connection_state_callback=states.append)
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        fake.on_connect(fake, None, None, 1)
+        self.assertEqual(states, [False])
+        self.assertFalse(client.connected)
+        self.assertEqual(fake.subscribe_calls, [])
+        client.stop()
+
+    def test_subscription_failure_reports_not_connected(self) -> None:
+        states: list[bool] = []
+        fake = FakeClient(subscribe_result=1)
+        factory = FakeClientFactory([fake])
+        client = self._new_client(connection_state_callback=states.append)
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        fake.on_connect(fake, None, None, 0)
+        self.assertEqual(states, [False])
+        self.assertFalse(client.connected)
+        client.stop()
     def test_successful_lifecycle_and_subscription(self) -> None:
         factory = FakeClientFactory()
         client = self._new_client(
@@ -437,8 +485,9 @@ class GritLiveMqttTests(unittest.TestCase):
         self._assert_stopped(client)
 
     def test_late_on_connect_after_stop_is_ignored(self) -> None:
+        states: list[bool] = []
         factory = FakeClientFactory()
-        client = self._new_client()
+        client = self._new_client(connection_state_callback=states.append)
         with self._paho_patch(factory):
             self.assertTrue(client.start())
         fake = factory.instances[0]
@@ -446,20 +495,24 @@ class GritLiveMqttTests(unittest.TestCase):
         fake.on_connect(fake, None, None, 0)
         self.assertFalse(client.connected)
         self.assertEqual(fake.subscribe_calls, [])
+        self.assertEqual(states, [])
 
     def test_obsolete_disconnect_does_not_change_replacement_state(self) -> None:
+        states: list[bool] = []
         old = FakeClient()
         replacement = FakeClient()
         factory = FakeClientFactory([old, replacement])
-        client = self._new_client()
+        client = self._new_client(connection_state_callback=states.append)
         with self._paho_patch(factory):
             self.assertTrue(client.start())
             client.stop()
             self.assertTrue(client.start())
         replacement.on_connect(replacement, None, None, 0)
         self.assertTrue(client.connected)
+        self.assertEqual(states, [True])
         old.on_disconnect(old, None, 1)
         self.assertTrue(client.connected)
+        self.assertEqual(states, [True])
         client.stop()
 
     def test_obsolete_on_message_is_ignored(self) -> None:

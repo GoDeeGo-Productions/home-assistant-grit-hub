@@ -43,10 +43,14 @@ def _load_coordinator_module():
             self.update_interval = update_interval
             self.data = None
             self.updated_data = []
+            self.listener_updates = 0
 
         def async_set_updated_data(self, data):
             self.data = data
             self.updated_data.append(data)
+
+        def async_update_listeners(self):
+            self.listener_updates += 1
 
     class UpdateFailed(Exception):
         pass
@@ -185,6 +189,27 @@ class CoordinatorMqttTests(unittest.TestCase):
             {"online": True} if payload is None else payload,
         )
 
+    def test_connection_state_notifies_only_on_changes(self):
+        instance = self.coordinator()
+        original_data = deepcopy(instance.data)
+
+        self.assertFalse(instance.mqtt_connected)
+        self.assertFalse(instance.set_mqtt_connected(False))
+        self.assertTrue(instance.set_mqtt_connected(True))
+        self.assertTrue(instance.mqtt_connected)
+        self.assertFalse(instance.set_mqtt_connected(True))
+        self.assertTrue(instance.set_mqtt_connected(False))
+        self.assertFalse(instance.mqtt_connected)
+
+        self.assertEqual(instance.listener_updates, 2)
+        self.assertEqual(instance.data, original_data)
+        self.assertEqual(instance.updated_data, [])
+
+    def test_connection_state_requires_boolean(self):
+        instance = self.coordinator()
+        for value in (1, 0, None, "true"):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                instance.set_mqtt_connected(value)
     def test_invalid_expected_hub_identifier_is_rejected(self):
         with self.assertRaises(ValueError):
             self.coordinator(expected=" ")

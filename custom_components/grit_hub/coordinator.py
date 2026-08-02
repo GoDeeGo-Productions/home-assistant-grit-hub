@@ -355,6 +355,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=scan_interval),
         )
         self.api = api
+        self._mqtt_connected = False
         self._expected_mqtt_hub_id = (
             None
             if expected_mqtt_hub_id is None
@@ -365,6 +366,21 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and self._expected_mqtt_hub_id is None
         ):
             raise ValueError("expected MQTT hub identifier is invalid")
+
+    @property
+    def mqtt_connected(self) -> bool:
+        """Return whether MQTT is connected and subscribed."""
+        return self._mqtt_connected
+
+    def set_mqtt_connected(self, connected: bool) -> bool:
+        """Update broker state on the event loop and notify once per change."""
+        if not isinstance(connected, bool):
+            raise TypeError("MQTT connection state must be a boolean")
+        if self._mqtt_connected == connected:
+            return False
+        self._mqtt_connected = connected
+        self.async_update_listeners()
+        return True
 
     async def _async_update_data(self) -> dict[str, Any]:
         previous_devices = (
