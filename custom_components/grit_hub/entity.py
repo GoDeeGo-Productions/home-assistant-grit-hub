@@ -8,6 +8,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import obj_id, obj_name
 from .const import DOMAIN
+from .coordinator import MQTT_STATE_KEY
 
 DIAGNOSTIC_ATTRIBUTE_KEYS = ("status", "state", "mode")
 
@@ -40,6 +41,27 @@ class GritHubEntity(CoordinatorEntity):
             if str(obj_id(item)) == str(self._device_id):
                 return item
         return self.device
+
+    @property
+    def mqtt_state(self) -> dict[str, Any]:
+        """Return only the coordinator's sanitized per-device MQTT state."""
+        state = self.current_device.get(MQTT_STATE_KEY)
+        return state if isinstance(state, dict) else {}
+
+    @property
+    def mqtt_online(self) -> bool | None:
+        """Return the strict sanitized online state when it is known."""
+        online = self.mqtt_state.get("online")
+        return online if isinstance(online, bool) else None
+
+    @property
+    def live_available(self) -> bool:
+        """Return conservative availability for live controllable entities."""
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.mqtt_connected
+            and self.mqtt_online is not False
+        )
 
     @property
     def diagnostic_attributes(self) -> dict[str, str | int | float | bool]:

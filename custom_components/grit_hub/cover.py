@@ -1,6 +1,8 @@
 """Gate covers for GRIT Hub."""
 from __future__ import annotations
 
+import math
+
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
 from homeassistant.exceptions import HomeAssistantError
 
@@ -19,6 +21,15 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(entities)
 
 
+def _bounded_position(value):
+    """Return a Home Assistant cover position without coercing text or bools."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or not 0 <= value <= 100:
+        return None
+    return round(value)
+
+
 class GritHubGateCover(GritHubEntity, CoverEntity):
     _attr_supported_features = CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
     _attr_device_class = "gate"
@@ -30,7 +41,25 @@ class GritHubGateCover(GritHubEntity, CoverEntity):
         self._attr_name = obj_name(device, "Gate")
 
     @property
+    def available(self):
+        return self.live_available
+
+    @property
+    def current_cover_position(self):
+        mqtt_state = self.mqtt_state
+        if "position" in mqtt_state:
+            return _bounded_position(mqtt_state["position"])
+        return _bounded_position(self.current_device.get("position"))
+
+    @property
     def is_closed(self):
+        mqtt_state = self.mqtt_state
+        if "open" in mqtt_state:
+            open_state = mqtt_state["open"]
+            if not isinstance(open_state, bool):
+                return None
+            return not open_state
+
         state = bool_state(self.current_device)
         if state is None:
             return None

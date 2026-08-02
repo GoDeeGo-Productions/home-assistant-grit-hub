@@ -4,13 +4,29 @@ from __future__ import annotations
 from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorDeviceClass
 from homeassistant.const import EntityCategory
 
-from .const import DOMAIN
+from .api import obj_id
+from .const import DEVICE_TYPES, DOMAIN
 from .entity import GritHubEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    async_add_entities([GritHubOnlineBinarySensor(coordinator)])
+    entities = [
+        GritHubOnlineBinarySensor(coordinator),
+        GritHubMqttConnectionBinarySensor(coordinator, entry.entry_id),
+    ]
+    for dev_type in DEVICE_TYPES:
+        for dev in coordinator.data.get("devices", {}).get(dev_type, []):
+            if obj_id(dev) is not None:
+                entities.append(
+                    GritHubDeviceMqttOnlineBinarySensor(
+                        coordinator,
+                        entry.entry_id,
+                        dev_type,
+                        dev,
+                    )
+                )
+    async_add_entities(entities)
 
 
 class GritHubOnlineBinarySensor(GritHubEntity, BinarySensorEntity):
@@ -22,3 +38,42 @@ class GritHubOnlineBinarySensor(GritHubEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         return self.coordinator.last_update_success
+
+
+class GritHubMqttConnectionBinarySensor(GritHubEntity, BinarySensorEntity):
+    _attr_name = "MQTT Connection"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator, entry_id):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"grit_hub_{entry_id}_mqtt_connected"
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.mqtt_connected
+
+
+class GritHubDeviceMqttOnlineBinarySensor(GritHubEntity, BinarySensorEntity):
+    _attr_name = "MQTT Online"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator, entry_id, device_type, device):
+        super().__init__(coordinator, device_type, device)
+        ident = obj_id(device)
+        self._attr_unique_id = (
+            f"grit_hub_{entry_id}_{device_type}_{ident}_mqtt_online"
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.mqtt_online is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.mqtt_online

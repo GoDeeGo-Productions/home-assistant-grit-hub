@@ -28,7 +28,15 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
         self._attr_icon = "mdi:lock" if device_type == "rfid" else "mdi:electric-switch"
 
     @property
+    def available(self):
+        return self.live_available
+
+    @property
     def is_on(self):
+        mqtt_state = self.mqtt_state
+        if "state" in mqtt_state:
+            state = mqtt_state["state"]
+            return state if isinstance(state, bool) else None
         return bool_state(self.current_device)
 
     @property
