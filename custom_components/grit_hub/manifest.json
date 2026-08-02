@@ -1,0 +1,13 @@
+{
+  "domain": "grit_hub",
+  "name": "GRIT Hub",
+  "codeowners": ["@dionweisler-ux"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/dionweisler-ux/home-assistant-grit-hub",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/dionweisler-ux/home-assistant-grit-hub/issues",
+  "requirements": ["paho-mqtt==2.1.0"],
+  "version": "0.1.0"
+}

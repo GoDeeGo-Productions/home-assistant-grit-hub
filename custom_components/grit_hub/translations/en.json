@@ -1,0 +1,84 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to GRIT Hub",
+        "description": "Enter the GRIT API and MQTT broker connection settings.",
+        "data": {
+          "base_url": "GRIT API base URL",
+          "token": "GRIT API bearer token",
+          "verify_ssl": "Verify GRIT API SSL certificate",
+          "scan_interval": "REST scan interval (seconds)",
+          "mqtt_host": "MQTT broker hostname",
+          "mqtt_port": "MQTT broker port",
+          "mqtt_hub_id": "MQTT topic hub ID",
+          "mqtt_username": "MQTT username",
+          "mqtt_password": "MQTT password",
+          "mqtt_use_tls": "Use MQTT TLS",
+          "mqtt_verify_tls": "Verify MQTT TLS certificate",
+          "mqtt_keepalive": "MQTT keepalive (seconds)"
+        },
+        "data_description": {
+          "mqtt_host": "Hostname or address of an existing MQTT broker.",
+          "mqtt_hub_id": "Hub identifier used in GRIT MQTT topics.",
+          "mqtt_username": "Optional broker username.",
+          "mqtt_password": "Optional broker password; a username is required.",
+          "mqtt_use_tls": "Enable encryption for the MQTT connection.",
+          "mqtt_verify_tls": "Verify the broker certificate when TLS is enabled."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure GRIT Hub",
+        "description": "Update connection settings. Leave the API token or MQTT password blank to keep the stored secret. Clearing the MQTT username also clears its password.",
+        "data": {
+          "base_url": "GRIT API base URL",
+          "token": "New GRIT API bearer token",
+          "verify_ssl": "Verify GRIT API SSL certificate",
+          "scan_interval": "REST scan interval (seconds)",
+          "mqtt_host": "MQTT broker hostname",
+          "mqtt_port": "MQTT broker port",
+          "mqtt_hub_id": "MQTT topic hub ID",
+          "mqtt_username": "MQTT username",
+          "mqtt_password": "New MQTT password",
+          "mqtt_use_tls": "Use MQTT TLS",
+          "mqtt_verify_tls": "Verify MQTT TLS certificate",
+          "mqtt_keepalive": "MQTT keepalive (seconds)"
+        },
+        "data_description": {
+          "token": "Leave blank to retain the stored API token.",
+          "mqtt_password": "Leave blank to retain the stored password when a username remains configured.",
+          "mqtt_verify_tls": "Applied only when MQTT TLS is enabled."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to GRIT Hub. Check the API URL, token, network path and SSL setting.",
+      "invalid_base_url": "Enter a valid GRIT API base URL.",
+      "invalid_token": "Enter a GRIT API bearer token.",
+      "invalid_verify_ssl": "Select a valid API certificate-verification setting.",
+      "invalid_scan_interval": "Enter a REST scan interval from 10 to 3600 seconds.",
+      "invalid_mqtt_host": "Enter a valid MQTT broker hostname.",
+      "invalid_mqtt_port": "Enter an MQTT broker port from 1 to 65535.",
+      "invalid_mqtt_hub_id": "Enter a valid MQTT topic hub ID.",
+      "invalid_mqtt_username": "Enter a valid MQTT username.",
+      "invalid_mqtt_password": "Enter a valid MQTT password.",
+      "mqtt_password_requires_username": "An MQTT password requires an MQTT username.",
+      "invalid_mqtt_tls": "Select valid MQTT TLS settings.",
+      "invalid_mqtt_keepalive": "Enter an MQTT keepalive from 1 to 65535 seconds."
+    },
+    "abort": {
+      "already_configured": "This GRIT Hub is already configured.",
+      "reconfigure_successful": "The GRIT Hub configuration was updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "GRIT Hub options",
+        "data": {
+          "scan_interval": "Scan interval seconds"
+        }
+      }
+    }
+  }
+}

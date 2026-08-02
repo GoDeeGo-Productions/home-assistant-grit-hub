@@ -1,0 +1,24 @@
+name: Hassfest validation
+
+"on":
+  push:
+  pull_request:
+  schedule:
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Home Assistant integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Hassfest validation
+        uses: home-assistant/actions/hassfest@master

@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a focused improvement to the GRIT Hub integration
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Keep requests focused and omit credentials, private site details,
+        personal data, and diagnostic payloads.
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What Home Assistant outcome are you trying to achieve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest change that would meet the use case.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any existing entities, services, or automations you tried.
+  - type: textarea
+    id: safety
+    attributes:
+      label: Physical safety impact
+      description: Explain whether this could operate gates or other access-control equipment.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: This request contains no credentials or private installation data.
+          required: true
