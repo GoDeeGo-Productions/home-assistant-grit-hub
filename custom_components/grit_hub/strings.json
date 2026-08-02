@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to GRIT Hub",
+        "description": "Enter your GRIT Hub base URL and bearer token.",
+        "data": {
+          "base_url": "Base URL",
+          "token": "Bearer token",
+          "verify_ssl": "Verify SSL certificate",
+          "scan_interval": "Scan interval seconds"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to GRIT Hub. Check the URL, token, network path and SSL setting."
+    },
+    "abort": {
+      "already_configured": "This GRIT Hub is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "GRIT Hub options",
+        "data": {
+          "scan_interval": "Scan interval seconds"
+        }
+      }
+    }
+  }
+}

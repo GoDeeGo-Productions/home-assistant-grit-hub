@@ -1,0 +1,51 @@
+device_command:
+  name: Send device command
+  description: Calls /api/command/{deviceType}/{id}/{commandName}/{action}/{remoteType}.
+  fields:
+    device_type:
+      required: true
+      selector:
+        text:
+    device_id:
+      required: true
+      selector:
+        text:
+    command_name:
+      required: true
+      selector:
+        text:
+    action:
+      required: true
+      selector:
+        text:
+    remote_type:
+      required: false
+      default: api
+      selector:
+        text:
+
+refresh_device:
+  name: Refresh GRIT Hub device
+  description: Calls the GRIT Hub refresh endpoint for a device and refreshes Home Assistant state.
+  fields:
+    device_type:
+      required: true
+      selector:
+        text:
+    device_id:
+      required: true
+      selector:
+        text:
+
+locate_device:
+  name: Locate GRIT Hub device
+  description: Calls the GRIT Hub locate endpoint for a device.
+  fields:
+    device_type:
+      required: true
+      selector:
+        text:
+    device_id:
+      required: true
+      selector:
+        text:
