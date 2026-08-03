@@ -363,9 +363,10 @@ class FakeCoordinator:
         self.confirmation_calls: list[tuple[str, str, bool, int, float]] = []
         self.gritlock_confirmation_hook: Callable[[bool], bool] | None = None
         self.gritlock_confirmation_block: asyncio.Event | None = None
-        self.gritlock_confirmation_calls: list[
-            tuple[bool, int, frozenset[str], float]
-        ] = []
+        self.gritlock_confirmation_calls: list[tuple[bool, int, float]] = []
+        self.gritlock_generation_sequence = 0
+        self.gritlock_generation_calls: list[int] = []
+        self.gritlock_cancel_calls: list[int] = []
 
     @property
     def hub_data(self) -> dict[str, Any]:
@@ -428,21 +429,26 @@ class FakeCoordinator:
             expected,
         )
 
+    def begin_gritlock_generation(self, after_sequence: int) -> int | None:
+        if not self.mqtt_connected or after_sequence != self.mqtt_receive_sequence:
+            return None
+        self.gritlock_generation_sequence += 1
+        self.gritlock_generation_calls.append(after_sequence)
+        return self.gritlock_generation_sequence
+
+    def cancel_gritlock_generation(self, generation_id: int) -> bool:
+        self.gritlock_cancel_calls.append(generation_id)
+        return True
+
     async def async_confirm_gritlock_state(
         self,
         expected: bool,
         *,
-        after_sequence: int,
-        known_participants: frozenset[str],
+        generation_id: int,
         timeout: float,
     ) -> bool:
         self.gritlock_confirmation_calls.append(
-            (
-                expected,
-                after_sequence,
-                known_participants,
-                timeout,
-            )
+            (expected, generation_id, timeout)
         )
         if self.gritlock_confirmation_block is not None:
             try:
@@ -679,11 +685,11 @@ class EntityMqttTests(unittest.TestCase):
         self.switch_device[MQTT_STATE_KEY]["state"] = "on"
         self.assertIsNone(switch.is_on)
 
-    def test_rfid_lock_ignores_rest_state_then_uses_authoritative_mqtt(self):
+    def test_rfid_lock_uses_provisional_rest_then_authoritative_mqtt(self):
         rfid = {
             "id": "rfid-fabricated",
             "name": "Fabricated RFID reader",
-            "state": False,
+            "lockout": True,
         }
         self.coordinator.data["devices"]["rfid"].append(rfid)
         entity = LOCK_MODULE.GritHubRfidLock(
@@ -692,11 +698,12 @@ class EntityMqttTests(unittest.TestCase):
             rfid,
         )
 
-        self.assertIsNone(entity.is_locked)
-        self.assertNotIn("state", entity.extra_state_attributes)
-        rfid[MQTT_STATE_KEY] = {"state": True, "online": True}
+        self.assertTrue(entity.is_locked)
+        self.assertNotIn("lockout", entity.extra_state_attributes)
+        rfid[MQTT_STATE_KEY] = {"locked": False, "online": True}
         self.assertFalse(entity.is_locked)
-        rfid[MQTT_STATE_KEY]["state"] = False
+        rfid["lockout"] = False
+        rfid[MQTT_STATE_KEY]["locked"] = True
         self.assertTrue(entity.is_locked)
 
     def test_unknown_gate_and_rfid_state_remain_unknown(self):
@@ -746,7 +753,7 @@ class EntityMqttTests(unittest.TestCase):
                     "position": 100 if expected else 0,
                 }
             else:
-                rfid[MQTT_STATE_KEY] = {"state": expected}
+                rfid[MQTT_STATE_KEY] = {"locked": expected}
             return True
 
         self.coordinator.confirmation_hook = confirm_mqtt
@@ -783,8 +790,8 @@ class EntityMqttTests(unittest.TestCase):
             [call[:4] for call in self.coordinator.confirmation_calls],
             [
                 ("gate", GATE_ID, True, 0),
-                ("rfid", "rfid-fabricated", True, 1),
-                ("rfid", "rfid-fabricated", False, 2),
+                ("rfid", "rfid-fabricated", False, 1),
+                ("rfid", "rfid-fabricated", True, 2),
             ],
         )
 
@@ -802,7 +809,7 @@ class EntityMqttTests(unittest.TestCase):
 
         async def command_with_interleaved_mqtt(*_args: Any) -> None:
             self.coordinator.mqtt_receive_sequence += 1
-            rfid[MQTT_STATE_KEY] = {"state": True}
+            rfid[MQTT_STATE_KEY] = {"locked": False}
 
         self.coordinator.confirmation_hook = (
             lambda _type, _ident, _expected: True
@@ -816,7 +823,7 @@ class EntityMqttTests(unittest.TestCase):
 
         self.assertEqual(
             self.coordinator.confirmation_calls,
-            [("rfid", "rfid-boundary-test", True, 0, LOCK_MODULE.DEVICE_CONFIRM_TIMEOUT)],
+            [("rfid", "rfid-boundary-test", False, 0, LOCK_MODULE.DEVICE_CONFIRM_TIMEOUT)],
         )
         self.assertFalse(entity.is_locked)
 
@@ -1304,12 +1311,12 @@ class EntityMqttTests(unittest.TestCase):
         )
         self.assertEqual(self.coordinator.refresh_calls, 0)
         self.assertEqual(
-            [call[:3] for call in self.coordinator.gritlock_confirmation_calls],
+            self.coordinator.gritlock_confirmation_calls,
             [
-                (True, 0, frozenset({"trigger-test"})),
-                (True, 0, frozenset({"trigger-test"})),
-                (False, 1, frozenset({"trigger-test"})),
-                (True, 2, frozenset({"trigger-test"})),
+                (True, 1, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
+                (True, 2, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
+                (False, 3, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
+                (True, 4, 0.01),
             ],
         )
 

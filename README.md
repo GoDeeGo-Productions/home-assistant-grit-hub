@@ -216,12 +216,25 @@ button, raw MQTT control, backup/restore control, SSH control or tunnel control.
 
 REST remains authoritative for discovery, static configuration and issuing
 commands. Sanitized MQTT is authoritative for live gate position, RFID reader
-enabled state and system-wide GRITLock consensus. REST polling preserves those
-live MQTT observations and cannot overwrite them. Once a source sequence or
-timestamp has established ordering for a state category, an update without
-comparable ordering metadata is rejected. Before authoritative live telemetry
-arrives, gate and RFID state remains unknown instead of being inferred from
-unproven REST or general status fields.
+lock state and system-wide GRITLock consensus. RFID `sts.s` is interpreted only
+for RFID readers: `0` is unlocked/enabled and `1` is locked/disabled. Proven
+RFID `s` and `st` messages remain supported with their explicit enabled-state
+semantics. A strict boolean REST `lockout` value is provisional startup evidence
+only; the first accepted RFID MQTT lock observation supersedes it. REST polling
+preserves live MQTT observations and cannot overwrite them. Once a source
+sequence or timestamp has established ordering for a state category, an update
+without comparable ordering metadata is rejected. Gate state remains Unknown
+until authoritative live telemetry arrives, and RFID state remains Unknown when
+neither strict provisional REST evidence nor authoritative MQTT evidence exists.
+
+GRITLock uses provisional REST consensus until an exact trigger `/gl` burst has
+settled. Each bounded MQTT generation retains at most the newest observation for
+64 trigger identities. Fresh `gte` participation takes priority over REST
+`gritLockEnabled`; every required participant must have a current-generation
+`gls` observation, and unanimity is required. A prior settled generation may be
+displayed while a new burst is collecting, but an incomplete or contradictory
+settled generation publishes Unknown. Disconnect discards MQTT generations and
+returns to valid provisional REST consensus where available.
 
 After the first successful MQTT subscription and each reconnect, the coordinator
 makes bounded targeted requests for uniquely identified gates and RFID readers
