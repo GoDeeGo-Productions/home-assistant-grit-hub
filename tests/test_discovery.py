@@ -45,6 +45,33 @@ class _CallbackApiVersion:
     VERSION1 = 1
 
 
+class InstalledPahoContractTests(unittest.TestCase):
+    def test_connect_async_returns_none_without_starting_network_loop(self):
+        try:
+            spec = importlib.util.find_spec("paho.mqtt.client")
+        except ModuleNotFoundError:
+            spec = None
+        if spec is None:
+            self.skipTest("paho-mqtt is not installed in the test environment")
+
+        from paho.mqtt import client as mqtt
+
+        client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
+            protocol=mqtt.MQTTv311,
+            reconnect_on_failure=False,
+        )
+        with mock.patch("socket.create_connection") as create_connection:
+            try:
+                result = client.connect_async(
+                    "127.0.0.1", 1883, keepalive=60
+                )
+            finally:
+                client.disconnect()
+        self.assertIsNone(result)
+        create_connection.assert_not_called()
+
+
 class FakeMessage:
     def __init__(self, topic):
         self.topic = topic
@@ -56,7 +83,8 @@ class FakePahoScenario:
         self.messages_before_suback = []
         self.clients = []
         self.connect_reason = 0
-        self.connect_result = 0
+        self.connect_result = None
+        self.connect_exception = None
         self.subscribe_result = 0
         self.suback_reason_codes = [0]
         self.suback_message_id = 1
@@ -108,11 +136,15 @@ class FakePahoScenario:
 
             def connect_async(self, host, port, *, keepalive):
                 self.connect_calls.append((host, port, keepalive))
+                if scenario.connect_exception is not None:
+                    raise scenario.connect_exception
                 return scenario.connect_result
 
             def loop_start(self):
                 self.loop_start_calls += 1
                 scenario.loop_started_event.set()
+                if scenario.loop_result != 0:
+                    return scenario.loop_result
                 if scenario.silent:
                     pass
                 elif scenario.connect_failure:
@@ -259,8 +291,10 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(client.connect_calls), 1)
         self.assertEqual(client.publish_calls, 0)
 
-    def test_successful_subscription_completes_without_message(self):
+    def test_paho_2_connect_async_none_reaches_matching_suback(self):
         scenario = FakePahoScenario()
+        self.assertIsNone(scenario.connect_result)
+        scenario.suback_message_id = 1
         started = time.monotonic()
         result, client = self.run_probe(
             scenario,
@@ -269,6 +303,8 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
         )
         elapsed = time.monotonic() - started
         self.assertEqual(result, DISCOVERY.MqttProbeResult(True, HUB_ID))
+        self.assertEqual(client.loop_start_calls, 1)
+        self.assertEqual(scenario.events[:2], ["subscribe", "suback"])
         self.assertLess(elapsed, 0.5)
         self.assertEqual(
             client.subscribe_calls,
@@ -460,7 +496,20 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
         self.assertFalse(result.connected)
         self.assert_stopped(client)
 
-    def test_connect_async_failure_cleans_up_without_loop(self):
+    def test_connect_async_exception_fails_closed_without_loop(self):
+        scenario = FakePahoScenario()
+        scenario.connect_exception = RuntimeError("fabricated connect failure")
+        started = time.monotonic()
+        result, client = self.run_probe(scenario)
+        self.assertFalse(result.connected)
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(client.disconnect_calls, 1)
+        self.assertEqual(client.loop_start_calls, 0)
+        self.assertEqual(client.loop_stop_calls, 0)
+        self.assertEqual(len(client.connect_calls), 1)
+        self.assertEqual(client.publish_calls, 0)
+
+    def test_explicit_connect_failure_result_is_compatibility_behavior(self):
         scenario = FakePahoScenario()
         scenario.connect_result = 4
         result, client = self.run_probe(scenario)
@@ -469,6 +518,18 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
         self.assertEqual(client.loop_start_calls, 0)
         self.assertEqual(client.loop_stop_calls, 0)
         self.assertEqual(len(client.connect_calls), 1)
+        self.assertEqual(client.publish_calls, 0)
+
+    def test_loop_start_failure_fails_closed_without_loop_stop(self):
+        scenario = FakePahoScenario()
+        scenario.loop_result = 4
+        result, client = self.run_probe(scenario)
+        self.assertFalse(result.connected)
+        self.assertEqual(client.disconnect_calls, 1)
+        self.assertEqual(client.loop_start_calls, 1)
+        self.assertEqual(client.loop_stop_calls, 0)
+        self.assertEqual(len(client.connect_calls), 1)
+        self.assertEqual(client.subscribe_calls, [])
         self.assertEqual(client.publish_calls, 0)
 
     def test_invalid_documented_hub_id_never_connects(self):
