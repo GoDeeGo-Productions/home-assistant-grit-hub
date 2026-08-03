@@ -19,6 +19,11 @@ PACKAGE_NAME = "_grit_config_flow_tests"
 
 FABRICATED_BASE_URL = "https://api.config-test.invalid"
 FABRICATED_TOKEN = "fabricated-api-token"
+FABRICATED_LEGACY_TOKEN = (
+    "eyJhbGciOiJmYWJyaWNhdGVkIn0."
+    + ("A" * 5_000)
+    + ".fabricated-signature"
+)
 FABRICATED_MQTT_HOST = "192.0.2.44"
 FABRICATED_HUB_ID = "0123456789abcdef0123456789abcdef"
 FABRICATED_USERNAME = "fabricated-mqtt-user"
@@ -469,6 +474,42 @@ class ConfigFlowMqttTests(unittest.TestCase):
         self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_USERNAME])
         self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD])
         self.assertNotIn(FLOW_MODULE.DEFAULT_MQTT_USERNAME, repr(result))
+
+    def test_long_legacy_token_reaches_authenticated_hub_validation(self):
+        flow, result = self.submit_api(
+            {FLOW_MODULE.CONF_TOKEN: FABRICATED_LEGACY_TOKEN}
+        )
+
+        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(
+            FakeApi.constructor_tokens,
+            [FABRICATED_LEGACY_TOKEN],
+        )
+        self.assertEqual(FakeApi.hub_calls, 1)
+        self.assertNotIn(FABRICATED_LEGACY_TOKEN, repr(result))
+        self.assertIsNotNone(flow._pending_api)
+
+    def test_unsafe_tokens_are_rejected_before_api_construction(self):
+        invalid_tokens = (
+            "",
+            "fabricated\ncontrol",
+            "fabricated-\u20ac-header",
+            "A" * 65_537,
+        )
+        for index, token in enumerate(invalid_tokens):
+            with self.subTest(case=index):
+                flow, result = self.submit_api(
+                    {FLOW_MODULE.CONF_TOKEN: token}
+                )
+                self.assertEqual(result["step_id"], "user")
+                self.assertEqual(
+                    result["errors"],
+                    {FLOW_MODULE.CONF_TOKEN: "invalid_token"},
+                )
+                self.assertEqual(FakeApi.constructor_tokens, [])
+                self.assertEqual(FakeApi.hub_calls, 0)
+                self.assertEqual(self.probe_calls, [])
+                self.assertIsNone(flow._pending_api)
 
     def test_authenticated_hub_failure_stays_on_initial_form(self):
         FakeApi.hub_error = True

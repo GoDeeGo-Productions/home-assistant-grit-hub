@@ -13,6 +13,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .api import GritHubApiClient, GritHubApiError
+from .auth import InvalidBearerToken, validate_bearer_token
 from .const import (
     CONF_BASE_URL,
     CONF_MQTT_HOST,
@@ -43,7 +44,7 @@ from .discovery import (
 )
 
 _MAX_BASE_URL_LENGTH = 2048
-_MAX_SECRET_LENGTH = 4096
+_MAX_MQTT_PASSWORD_LENGTH = 4096
 _CONF_SHOW_ADVANCED = "show_advanced"
 _PASSWORD_SELECTOR = selector.TextSelector(
     selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
@@ -111,23 +112,26 @@ def _boolean(
     return value
 
 
-def _secret(
+def _token(
     data: dict[str, Any],
     field: str,
     code: str,
     existing: dict[str, Any] | None,
 ) -> str:
     value = data.get(field)
-    if value is not None and not isinstance(value, str):
-        raise _InputError(field, code)
-    if isinstance(value, str) and value.strip():
-        if len(value) > _MAX_SECRET_LENGTH:
+    if value is not None and not (
+        isinstance(value, str) and not value.strip()
+    ):
+        try:
+            return validate_bearer_token(value)
+        except InvalidBearerToken:
             raise _InputError(field, code)
-        return value
     if existing is not None:
         stored = existing.get(field)
-        if isinstance(stored, str) and stored:
-            return stored
+        try:
+            return validate_bearer_token(stored)
+        except InvalidBearerToken:
+            pass
     raise _InputError(field, code)
 
 
@@ -149,7 +153,7 @@ def _password(data: dict[str, Any]) -> str | None:
     value = data.get(CONF_MQTT_PASSWORD)
     if value is None:
         return None
-    if not isinstance(value, str) or len(value) > _MAX_SECRET_LENGTH:
+    if not isinstance(value, str) or len(value) > _MAX_MQTT_PASSWORD_LENGTH:
         raise _InputError(CONF_MQTT_PASSWORD, "invalid_mqtt_password")
     return value if value.strip() else None
 
@@ -180,7 +184,7 @@ def _normalize_api_config(
         raise _InputError(CONF_BASE_URL, "invalid_base_url")
     return {
         CONF_BASE_URL: base_url,
-        CONF_TOKEN: _secret(data, CONF_TOKEN, "invalid_token", existing),
+        CONF_TOKEN: _token(data, CONF_TOKEN, "invalid_token", existing),
         CONF_VERIFY_SSL: _boolean(
             data, CONF_VERIFY_SSL, True, "invalid_verify_ssl"
         ),

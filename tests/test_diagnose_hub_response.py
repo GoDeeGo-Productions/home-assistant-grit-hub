@@ -8,6 +8,11 @@ import unittest
 from unittest import mock
 
 
+FABRICATED_LEGACY_TOKEN = (
+    "eyJhbGciOiJmYWJyaWNhdGVkIn0."
+    + ("A" * 5_000)
+    + ".fabricated-signature"
+)
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "diagnose_hub_response.py"
 )
@@ -129,6 +134,76 @@ class HubResponseDiagnosticTests(unittest.TestCase):
         )
         self.assertNotIn(token, repr(summary))
         self.assert_redacted(summary)
+
+    def test_long_legacy_token_reaches_mocked_request_unchanged(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            @staticmethod
+            def getcode():
+                return 200
+
+            def read(self, _maximum):
+                return json.dumps(self_hub).encode("utf-8")
+
+        self_hub = self.hub()
+        with mock.patch.object(
+            DIAGNOSTIC,
+            "_open_request",
+            return_value=FakeResponse(),
+        ) as opened:
+            summary = DIAGNOSTIC.fetch_summary(
+                "https://api.diagnostic-test.invalid",
+                FABRICATED_LEGACY_TOKEN,
+            )
+
+        self.assertIsNone(summary["generic_error_category"])
+        request = opened.call_args.args[0]
+        self.assertEqual(
+            request.get_header("Authorization"),
+            f"Bearer {FABRICATED_LEGACY_TOKEN}",
+        )
+        self.assertNotIn(FABRICATED_LEGACY_TOKEN, repr(summary))
+
+    def test_only_actual_http_401_maps_to_invalid_auth(self) -> None:
+        with mock.patch.object(DIAGNOSTIC, "_open_request") as opened:
+            blank = DIAGNOSTIC.fetch_summary(
+                "https://api.diagnostic-test.invalid",
+                "",
+            )
+        self.assertEqual(blank["generic_error_category"], "invalid_token")
+        opened.assert_not_called()
+
+        for status, expected in (
+            (401, "invalid_auth"),
+            (403, "hub_request_failed"),
+        ):
+            with self.subTest(status=status):
+                error = DIAGNOSTIC.HTTPError(
+                    "https://api.diagnostic-test.invalid/api/hub/1",
+                    status,
+                    "fabricated HTTP error",
+                    {},
+                    None,
+                )
+                with mock.patch.object(
+                    DIAGNOSTIC,
+                    "_open_request",
+                    side_effect=error,
+                ) as opened:
+                    summary = DIAGNOSTIC.fetch_summary(
+                        "https://api.diagnostic-test.invalid",
+                        FABRICATED_LEGACY_TOKEN,
+                    )
+                error.close()
+                opened.assert_called_once()
+                self.assertEqual(summary["generic_error_category"], expected)
+                self.assertEqual(summary["http_status"], status)
+                self.assertNotIn(FABRICATED_LEGACY_TOKEN, repr(summary))
 
     def test_arbitrary_top_level_key_names_are_not_disclosed(self) -> None:
         private_key = "fabricated-person@example.invalid"
