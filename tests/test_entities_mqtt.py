@@ -354,6 +354,12 @@ class FakeCoordinator:
         self.refresh_sequence = 1
         self.hub_update_sequence = 1
         self.gritlock_update_sequence = 1
+        self.mqtt_receive_sequence = 0
+        self.confirmation_hook: (
+            Callable[[str, str, bool], bool] | None
+        ) = None
+        self.confirmation_block: asyncio.Event | None = None
+        self.confirmation_calls: list[tuple[str, str, bool, int, float]] = []
 
     @property
     def hub_data(self) -> dict[str, Any]:
@@ -380,6 +386,41 @@ class FakeCoordinator:
             )
         self.refresh_hook()
 
+
+    async def async_confirm_device_state(
+        self,
+        device_type: str,
+        device_id: Any,
+        expected: bool,
+        *,
+        after_sequence: int,
+        timeout: float,
+    ) -> bool:
+        self.confirmation_calls.append(
+            (
+                device_type,
+                str(device_id),
+                expected,
+                after_sequence,
+                timeout,
+            )
+        )
+        if self.confirmation_block is not None:
+            try:
+                await asyncio.wait_for(
+                    self.confirmation_block.wait(),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                return False
+        if self.confirmation_hook is None:
+            return False
+        self.mqtt_receive_sequence += 1
+        return self.confirmation_hook(
+            device_type,
+            str(device_id),
+            expected,
+        )
     def set_mqtt_connected(self, connected: bool) -> bool:
         if self.mqtt_connected == connected:
             return False
@@ -524,10 +565,12 @@ class EntityMqttTests(unittest.TestCase):
         self.gate[MQTT_STATE_KEY]["position"] = 101
         self.assertIsNone(cover.current_cover_position)
 
-    def test_cover_rest_fallback_precedes_first_mqtt_state(self):
+    def test_cover_ignores_unproven_rest_state_before_mqtt(self):
         cover = self.gate_cover()
-        self.assertEqual(cover.current_cover_position, 20)
-        self.assertTrue(cover.is_closed)
+        self.assertIsNone(cover.current_cover_position)
+        self.assertIsNone(cover.is_closed)
+        self.gate["state"] = False
+        self.assertNotIn("state", cover.extra_state_attributes)
         self.gate[MQTT_STATE_KEY] = {"open": "open", "position": "80"}
         self.assertIsNone(cover.current_cover_position)
         self.assertIsNone(cover.is_closed)
@@ -569,7 +612,7 @@ class EntityMqttTests(unittest.TestCase):
         self.switch_device[MQTT_STATE_KEY]["state"] = "on"
         self.assertIsNone(switch.is_on)
 
-    def test_rfid_rest_startup_and_mqtt_login_logout_state(self):
+    def test_rfid_ignores_rest_state_then_uses_mqtt_login_logout(self):
         rfid = {
             "id": "rfid-fabricated",
             "name": "Fabricated RFID reader",
@@ -582,7 +625,8 @@ class EntityMqttTests(unittest.TestCase):
             rfid,
         )
 
-        self.assertFalse(entity.is_on)
+        self.assertIsNone(entity.is_on)
+        self.assertNotIn("state", entity.extra_state_attributes)
         rfid[MQTT_STATE_KEY] = {"state": True, "online": True}
         self.assertTrue(entity.is_on)
         rfid[MQTT_STATE_KEY]["state"] = False
@@ -609,7 +653,7 @@ class EntityMqttTests(unittest.TestCase):
         self.assertIsNone(cover.is_closed)
         self.assertIsNone(switch.is_on)
 
-    def test_mocked_gate_and_rfid_commands_refresh_confirmed_state(self):
+    def test_mocked_gate_and_rfid_commands_require_fresh_mqtt_state(self):
         rfid = {
             "id": "rfid-fabricated",
             "name": "Fabricated RFID reader",
@@ -624,26 +668,32 @@ class EntityMqttTests(unittest.TestCase):
         )
         command = mock.AsyncMock()
 
-        def confirm_gate() -> None:
-            self.gate["open"] = True
-            self.gate["position"] = 100
+        def confirm_mqtt(
+            device_type: str,
+            _device_id: str,
+            expected: bool,
+        ) -> bool:
+            if device_type == "gate":
+                self.gate[MQTT_STATE_KEY] = {
+                    "open": expected,
+                    "position": 100 if expected else 0,
+                }
+            else:
+                rfid[MQTT_STATE_KEY] = {"state": expected}
+            return True
 
+        self.coordinator.confirmation_hook = confirm_mqtt
         with mock.patch.object(
             self.coordinator.api,
             "set_device_state",
             command,
         ):
-            self.coordinator.refresh_hook = confirm_gate
             self.loop.run_until_complete(cover.async_open_cover())
             command.assert_awaited_once_with("gate", GATE_ID, True)
             self.assertFalse(cover.is_closed)
             self.assertEqual(cover.current_cover_position, 100)
 
             command.reset_mock()
-            self.coordinator.refresh_hook = lambda: rfid.__setitem__(
-                "state",
-                True,
-            )
             self.loop.run_until_complete(switch.async_turn_on())
             command.assert_awaited_once_with(
                 "rfid",
@@ -653,10 +703,6 @@ class EntityMqttTests(unittest.TestCase):
             self.assertTrue(switch.is_on)
 
             command.reset_mock()
-            self.coordinator.refresh_hook = lambda: rfid.__setitem__(
-                "state",
-                False,
-            )
             self.loop.run_until_complete(switch.async_turn_off())
             command.assert_awaited_once_with(
                 "rfid",
@@ -665,7 +711,15 @@ class EntityMqttTests(unittest.TestCase):
             )
             self.assertFalse(switch.is_on)
 
-        self.assertEqual(self.coordinator.refresh_calls, 3)
+        self.assertEqual(self.coordinator.refresh_calls, 0)
+        self.assertEqual(
+            [call[:4] for call in self.coordinator.confirmation_calls],
+            [
+                ("gate", GATE_ID, True, 0),
+                ("rfid", "rfid-fabricated", True, 1),
+                ("rfid", "rfid-fabricated", False, 2),
+            ],
+        )
 
     def test_gate_and_rfid_commands_fail_when_state_is_unconfirmed(self):
         rfid = {
@@ -687,13 +741,12 @@ class EntityMqttTests(unittest.TestCase):
             "set_device_state",
             command,
         ):
-            self.coordinator.refresh_hook = lambda: None
             with self.assertRaisesRegex(
                 HomeAssistantError,
                 "Gate state could not be confirmed",
             ):
                 self.loop.run_until_complete(cover.async_open_cover())
-            self.assertTrue(cover.is_closed)
+            self.assertIsNone(cover.is_closed)
 
             command.reset_mock()
             with self.assertRaisesRegex(
@@ -701,18 +754,72 @@ class EntityMqttTests(unittest.TestCase):
                 "Device state could not be confirmed",
             ):
                 self.loop.run_until_complete(switch.async_turn_on())
-            self.assertFalse(switch.is_on)
+            self.assertIsNone(switch.is_on)
 
             command.reset_mock()
-            self.coordinator.refresh_hook = lambda: self.coordinator.data[
-                "devices"
-            ]["gate"].clear()
             with self.assertRaisesRegex(
                 HomeAssistantError,
                 "Gate state could not be confirmed",
             ):
                 self.loop.run_until_complete(cover.async_open_cover())
             command.assert_awaited_once_with("gate", GATE_ID, True)
+
+    def test_gate_and_rfid_commands_do_not_run_without_mqtt(self):
+        rfid = {
+            "id": "rfid-fabricated",
+            "name": "Fabricated RFID reader",
+        }
+        self.coordinator.data["devices"]["rfid"].append(rfid)
+        self.coordinator.mqtt_connected = False
+        cover = self.gate_cover()
+        switch = SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "rfid",
+            rfid,
+        )
+        command = mock.AsyncMock()
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ):
+            with self.assertRaisesRegex(
+                HomeAssistantError,
+                "Gate state could not be confirmed",
+            ):
+                self.loop.run_until_complete(cover.async_open_cover())
+            with self.assertRaisesRegex(
+                HomeAssistantError,
+                "Device state could not be confirmed",
+            ):
+                self.loop.run_until_complete(switch.async_turn_on())
+
+        command.assert_not_awaited()
+        self.assertEqual(self.coordinator.confirmation_calls, [])
+
+    def test_mqtt_observed_during_command_cannot_confirm_gate(self):
+        cover = self.gate_cover()
+
+        async def command_with_interleaved_mqtt(*_args: Any) -> None:
+            self.coordinator.mqtt_receive_sequence += 1
+            self.gate[MQTT_STATE_KEY] = {
+                "open": True,
+                "position": 100,
+            }
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            side_effect=command_with_interleaved_mqtt,
+        ):
+            with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+                self.loop.run_until_complete(cover.async_open_cover())
+
+        self.assertEqual(
+            self.coordinator.confirmation_calls,
+            [("gate", GATE_ID, True, 1, COVER_MODULE.DEVICE_CONFIRM_TIMEOUT)],
+        )
 
     def test_non_rfid_stale_mqtt_cannot_confirm_rest_command(self):
         switch = self.device_switch()
@@ -733,7 +840,8 @@ class EntityMqttTests(unittest.TestCase):
 
         command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
 
-    def test_matching_stale_state_requires_new_successful_refresh(self):
+    def test_matching_stale_state_cannot_confirm_command(self):
+        self.gate[MQTT_STATE_KEY] = {"open": False, "position": 20}
         cover = self.gate_cover()
         switch = self.device_switch()
         command = mock.AsyncMock()
@@ -753,26 +861,24 @@ class EntityMqttTests(unittest.TestCase):
             with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
                 self.loop.run_until_complete(switch.async_turn_off())
 
-        self.coordinator.last_update_success = False
-        self.coordinator.refresh_hook = lambda: self.gate.__setitem__("open", True)
-        with mock.patch.object(
-            self.coordinator.api,
-            "set_device_state",
-            command,
-        ):
-            with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
-                self.loop.run_until_complete(cover.async_open_cover())
+        no_refresh.assert_awaited_once_with()
+        self.assertTrue(cover.is_closed)
+        self.assertEqual(cover.current_cover_position, 20)
 
     def test_gate_command_is_not_optimistic_while_confirmation_is_pending(self):
+        self.gate[MQTT_STATE_KEY] = {"open": False, "position": 20}
         cover = self.gate_cover()
         command = mock.AsyncMock()
-        self.coordinator.refresh_block = asyncio.Event()
+        self.coordinator.confirmation_block = asyncio.Event()
 
-        def confirm_gate() -> None:
-            self.gate["open"] = True
-            self.gate["position"] = 100
+        def confirm_gate(_type: str, _ident: str, expected: bool) -> bool:
+            self.gate[MQTT_STATE_KEY] = {
+                "open": expected,
+                "position": 100,
+            }
+            return True
 
-        self.coordinator.refresh_hook = confirm_gate
+        self.coordinator.confirmation_hook = confirm_gate
         with mock.patch.object(
             self.coordinator.api,
             "set_device_state",
@@ -784,7 +890,7 @@ class EntityMqttTests(unittest.TestCase):
             self.assertTrue(cover.is_closed)
             self.assertEqual(cover.current_cover_position, 20)
 
-            self.coordinator.refresh_block.set()
+            self.coordinator.confirmation_block.set()
             self.loop.run_until_complete(task)
 
         self.assertFalse(cover.is_closed)
@@ -811,7 +917,7 @@ class EntityMqttTests(unittest.TestCase):
             "set_device_state",
             command,
         ):
-            self.coordinator.refresh_block = asyncio.Event()
+            self.coordinator.confirmation_block = asyncio.Event()
             with mock.patch.object(
                 COVER_MODULE,
                 "DEVICE_CONFIRM_TIMEOUT",
@@ -823,7 +929,7 @@ class EntityMqttTests(unittest.TestCase):
                 "Gate state could not be confirmed",
             )
 
-            self.coordinator.refresh_block = None
+            self.coordinator.confirmation_block = None
             command.side_effect = SWITCH_MODULE.GritHubApiError(
                 private_detail
             )

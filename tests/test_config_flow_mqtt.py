@@ -154,7 +154,14 @@ class OptionsFlow(_FlowBase):
 
 
 class FakeApiError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.http_status = http_status
 
 
 class FakeApi:
@@ -163,6 +170,7 @@ class FakeApi:
     constructor_tokens = []
     health_error = False
     hub_error = False
+    hub_status = None
     hub_values = {}
     read_events = []
 
@@ -180,7 +188,10 @@ class FakeApi:
         type(self).hub_calls += 1
         type(self).read_events.append("hub")
         if type(self).hub_error:
-            raise FakeApiError("fabricated hub failure")
+            raise FakeApiError(
+                "fabricated hub failure",
+                http_status=type(self).hub_status,
+            )
         return deepcopy(type(self).hub_values)
 
 
@@ -269,6 +280,7 @@ class ConfigFlowMqttTests(unittest.TestCase):
         FakeApi.hub_calls = 0
         FakeApi.constructor_tokens = []
         FakeApi.health_error = False
+        FakeApi.hub_status = None
         FakeApi.hub_error = False
         FakeApi.hub_values = {
             "id": FABRICATED_HUB_ID,
@@ -458,16 +470,64 @@ class ConfigFlowMqttTests(unittest.TestCase):
         self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD])
         self.assertNotIn(FLOW_MODULE.DEFAULT_MQTT_USERNAME, repr(result))
 
-    def test_rest_discovery_failure_falls_back_to_advanced(self):
+    def test_authenticated_hub_failure_stays_on_initial_form(self):
         FakeApi.hub_error = True
-        self.probe_result = types.SimpleNamespace(
-            connected=False,
-            hub_id=None,
-            ambiguous=False,
-        )
-        _flow, result = self.submit_api()
-        self.assertEqual(result["step_id"], "advanced")
+
+        flow, result = self.submit_api()
+
+        self.assertEqual(result["step_id"], "user")
+        self.assertEqual(result["errors"], {"base": "cannot_connect"})
+        self.assertEqual(FakeApi.health_calls, 0)
         self.assertEqual(FakeApi.hub_calls, 1)
+        self.assertEqual(self.probe_calls, [])
+        self.assertEqual(flow.hass.executor_calls, [])
+        self.assertIsNone(flow._pending_api)
+        self.assertEqual(flow._advanced_defaults, {})
+        self.assertNotIn(FABRICATED_TOKEN, repr(result))
+
+    def test_http_401_is_invalid_auth_and_never_probes_mqtt(self):
+        FakeApi.hub_error = True
+        FakeApi.hub_status = 401
+
+        flow, result = self.submit_api()
+
+        self.assertEqual(result["step_id"], "user")
+        self.assertEqual(result["errors"], {"base": "invalid_auth"})
+        self.assertEqual(FakeApi.hub_calls, 1)
+        self.assertEqual(FakeApi.health_calls, 0)
+        self.assertEqual(self.probe_calls, [])
+        self.assertEqual(flow.hass.executor_calls, [])
+        self.assertNotIn(FABRICATED_TOKEN, repr(result))
+
+    def test_empty_authenticated_hub_response_fails_before_mqtt(self):
+        FakeApi.hub_values = {}
+
+        flow, result = self.submit_api()
+
+        self.assertEqual(result["step_id"], "user")
+        self.assertEqual(result["errors"], {"base": "cannot_connect"})
+        self.assertEqual(FakeApi.hub_calls, 1)
+        self.assertEqual(self.probe_calls, [])
+        self.assertIsNone(flow._pending_api)
+
+    def test_failed_retry_clears_prior_authenticated_discovery_state(self):
+        flow, first = self.submit_api()
+        self.assertEqual(first["step_id"], "confirm")
+        self.assertIsNotNone(flow._pending_api)
+        initial_probe_count = len(self.probe_calls)
+
+        FakeApi.hub_error = True
+        FakeApi.hub_status = 401
+        failed = _run_immediate(flow.async_step_user(self.api_input()))
+
+        self.assertEqual(failed["step_id"], "user")
+        self.assertEqual(failed["errors"], {"base": "invalid_auth"})
+        self.assertIsNone(flow._pending_api)
+        self.assertEqual(flow._advanced_defaults, {})
+        self.assertEqual(len(self.probe_calls), initial_probe_count)
+        confirm = _run_immediate(flow.async_step_confirm())
+        self.assertEqual(confirm["step_id"], "user")
+        self.assertEqual(flow.created_entries, [])
 
     def test_missing_documented_fields_do_not_probe_api_hostname(self):
         cases = (
@@ -489,6 +549,20 @@ class ConfigFlowMqttTests(unittest.TestCase):
                 _flow, result = self.submit_api()
                 self.assertEqual(result["step_id"], "advanced")
                 self.assertEqual(self.probe_calls, [])
+
+    def test_advanced_fallback_contains_no_api_or_mqtt_secret(self):
+        FakeApi.hub_values = {"name": "Fabricated Hub"}
+
+        _flow, result = self.submit_api()
+
+        self.assertEqual(result["step_id"], "advanced")
+        rendered = repr(result)
+        for secret in (
+            FABRICATED_TOKEN,
+            FLOW_MODULE.DEFAULT_MQTT_USERNAME,
+            FLOW_MODULE.DEFAULT_MQTT_PASSWORD,
+        ):
+            self.assertNotIn(secret, rendered)
 
     def test_mqtt_timeout_is_bounded_and_shows_manual_fallback(self):
         _flow, result = self.manual_flow()
@@ -539,19 +613,20 @@ class ConfigFlowMqttTests(unittest.TestCase):
             8883,
         )
 
-    def test_health_failure_prevents_all_discovery(self):
+    def test_public_health_endpoint_is_not_used_for_credential_validation(self):
         FakeApi.health_error = True
-        flow, result = self.submit_api()
-        self.assertEqual(result["step_id"], "user")
-        self.assertEqual(result["errors"], {"base": "cannot_connect"})
-        self.assertEqual(FakeApi.hub_calls, 0)
-        self.assertEqual(self.probe_calls, [])
-        self.assertEqual(flow.hass.executor_calls, [])
+
+        _flow, result = self.submit_api()
+
+        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(FakeApi.health_calls, 0)
+        self.assertEqual(FakeApi.hub_calls, 1)
 
     def test_discovery_performs_one_read_sequence_and_one_probe(self):
         flow, result = self.submit_api()
         self.assertEqual(result["step_id"], "confirm")
-        self.assertEqual(FakeApi.read_events, ["health", "hub"])
+        self.assertEqual(FakeApi.read_events, ["hub"])
+        self.assertEqual(FakeApi.health_calls, 0)
         self.assertEqual(len(self.probe_calls), 1)
         self.assertEqual(len(flow.hass.executor_calls), 1)
         self.assertEqual(
@@ -713,6 +788,10 @@ class ConfigFlowMqttTests(unittest.TestCase):
             UNDEFINED,
         )
 
+        self.assertIs(
+            fields[FLOW_MODULE.CONF_MQTT_USERNAME][0].default,
+            UNDEFINED,
+        )
     def test_blank_reconfigure_secrets_preserve_stored_values(self):
         entry = self.existing_entry()
         user_input = self.reconfigure_input(entry)
@@ -725,6 +804,42 @@ class ConfigFlowMqttTests(unittest.TestCase):
             entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD],
             FABRICATED_PASSWORD,
         )
+
+
+    def test_reconfigure_rejects_empty_authenticated_hub_response(self):
+        entry = self.existing_entry()
+        original_data = deepcopy(entry.data)
+        FakeApi.hub_values = {}
+
+        flow, result = self.reconfigure(
+            entry,
+            self.reconfigure_input(entry),
+        )
+
+        self.assertEqual(result["step_id"], "reconfigure")
+        self.assertEqual(result["errors"], {"base": "cannot_connect"})
+        self.assertEqual(entry.data, original_data)
+        self.assertEqual(flow.updated_entries, [])
+        self.assertEqual(self.probe_calls, [])
+
+    def test_reconfigure_401_preserves_entry_and_exposes_no_secret(self):
+        entry = self.existing_entry()
+        original_data = deepcopy(entry.data)
+        user_input = self.reconfigure_input(entry)
+        rejected_token = "fabricated-rejected-token"
+        user_input[FLOW_MODULE.CONF_TOKEN] = rejected_token
+        FakeApi.hub_error = True
+        FakeApi.hub_status = 401
+
+        flow, result = self.reconfigure(entry, user_input)
+
+        self.assertEqual(result["step_id"], "reconfigure")
+        self.assertEqual(result["errors"], {"base": "invalid_auth"})
+        self.assertEqual(entry.data, original_data)
+        self.assertEqual(flow.updated_entries, [])
+        self.assertEqual(FakeApi.hub_calls, 1)
+        self.assertEqual(self.probe_calls, [])
+        self.assertNotIn(rejected_token, repr(result))
 
     def test_supplied_reconfigure_secrets_replace_stored_values(self):
         entry = self.existing_entry()

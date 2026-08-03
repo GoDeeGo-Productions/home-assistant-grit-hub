@@ -58,8 +58,10 @@ Home Assistant's IoT-class field does not express that topology separately.
 ## Prerequisites
 
 For the normal installation path, obtain a reachable GRIT REST API base URL and
-bearer token. The integration authenticates first and then attempts to discover
-the MQTT broker and topic hub ID.
+a token accepted by the authenticated current-hub API. The OpenAPI documents
+remote-access tokens created by `/api/hub/token` as tokens for API access. The
+integration sends the supplied value only as an `Authorization: Bearer` header;
+it does not send an `auth_token` query parameter.
 
 An existing MQTT broker must still be reachable from Home Assistant; HACS does
 not install or provide one. Normal setup uses the documented Ethernet address
@@ -107,12 +109,12 @@ The first page asks only for:
 - **Verify GRIT API SSL certificate:** keep enabled for a normally trusted HTTPS
   certificate.
 
-After successful REST authentication, setup performs a deterministic discovery
-sequence:
+Setup performs a deterministic discovery sequence:
 
-1. It authenticates against the configured REST API, then reads the current hub
-   through the existing documented request `GET /api/hub/1` with a short
-   timeout.
+1. It validates the supplied bearer token directly against the required
+   authenticated `GET /api/hub/1` request with a short timeout. A response from
+   the health endpoint is not treated as proof that the token can access the
+   integration API.
 2. It accepts only a valid documented 32-character hexadecimal `id` as the MQTT
    topic hub ID and a valid `ipAddressEthernet` value as the broker address.
 3. It makes one bounded connection attempt to that exact address on port 1883,
@@ -270,8 +272,10 @@ after setup may require an integration reload before new entities appear.
   not scan the local network or try another host or port.
 - **Entry remains not ready:** verify both the REST API and MQTT broker are
   reachable from Home Assistant. MQTT must connect and subscribe during setup.
-- **REST connection fails:** check the API base URL, token, network path and
-  certificate-verification setting.
+- **REST connection fails:** check the API base URL, network path and
+  certificate-verification setting. Use a GRIT API token accepted by
+  `GET /api/hub/1`, enter its value without a `Bearer` prefix, and do not enter
+  an `auth_token` query parameter or browser redirect URL.
 - **MQTT connection fails:** check broker host, port, credentials, listener
   protocol, firewall rules, hub ID and TLS settings. HACS does not provide the
   broker.

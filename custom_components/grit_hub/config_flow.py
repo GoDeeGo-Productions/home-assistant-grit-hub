@@ -304,8 +304,18 @@ def _api_schema(
 
 def _advanced_schema_fields(
     defaults: dict[str, Any] | None = None,
+    *,
+    redact_username: bool = False,
 ) -> dict[Any, Any]:
     defaults = defaults or {}
+    username = (
+        vol.Optional(CONF_MQTT_USERNAME)
+        if redact_username
+        else vol.Optional(
+            CONF_MQTT_USERNAME,
+            default=defaults.get(CONF_MQTT_USERNAME) or "",
+        )
+    )
     return {
         vol.Required(
             CONF_SCAN_INTERVAL,
@@ -323,10 +333,7 @@ def _advanced_schema_fields(
             CONF_MQTT_HUB_ID,
             default=defaults.get(CONF_MQTT_HUB_ID, ""),
         ): str,
-        vol.Optional(
-            CONF_MQTT_USERNAME,
-            default=defaults.get(CONF_MQTT_USERNAME) or "",
-        ): str,
+        username: str,
         vol.Optional(CONF_MQTT_PASSWORD): _PASSWORD_SELECTOR,
         vol.Optional(
             CONF_MQTT_USE_TLS,
@@ -351,8 +358,24 @@ def _config_schema(
     reconfigure: bool = False,
 ) -> vol.Schema:
     fields = _api_schema(defaults, reconfigure=reconfigure)
-    fields.update(_advanced_schema_fields(defaults))
+    fields.update(
+        _advanced_schema_fields(defaults, redact_username=reconfigure)
+    )
     return vol.Schema(fields)
+
+
+def _api_failure_code(error: Exception) -> str:
+    """Map only a proven HTTP authentication rejection specially."""
+    if (
+        isinstance(error, GritHubApiError)
+        and getattr(error, "http_status", None) == 401
+    ):
+        return "invalid_auth"
+    return "cannot_connect"
+
+def _valid_authenticated_hub(value: Any) -> bool:
+    """Require a non-empty sanitized object from the authenticated route."""
+    return isinstance(value, dict) and bool(value)
 
 
 class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -368,14 +391,8 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _async_discover_installation(
         self,
         api_config: dict[str, Any],
-        api: GritHubApiClient,
+        hub: dict[str, Any] | None,
     ):
-        try:
-            hub = await api.get_hub()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            hub = None
         rest = extract_rest_mqtt_discovery([hub])
 
         defaults: dict[str, Any] = {
@@ -426,6 +443,8 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ):
         errors: dict[str, str] = {}
         if user_input is not None:
+            self._pending_api = None
+            self._advanced_defaults = {}
             try:
                 normalized = _normalize_api_config(user_input)
             except _InputError as err:
@@ -440,13 +459,21 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     normalized[CONF_VERIFY_SSL],
                 )
                 try:
-                    await api.health_check()
-                except GritHubApiError:
+                    hub = await api.get_hub()
+                    if not _valid_authenticated_hub(hub):
+                        raise GritHubApiError(
+                            "Authenticated hub response is invalid"
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except GritHubApiError as err:
+                    errors["base"] = _api_failure_code(err)
+                except Exception:
                     errors["base"] = "cannot_connect"
                 else:
                     return await self._async_discover_installation(
                         normalized,
-                        api,
+                        hub,
                     )
 
         return self.async_show_form(
@@ -522,13 +549,32 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except _InputError as err:
                 errors[err.field] = err.code
             else:
-                return self.async_update_reload_and_abort(
-                    entry,
-                    data_updates=normalized,
-                    options_updates={
-                        CONF_SCAN_INTERVAL: normalized[CONF_SCAN_INTERVAL]
-                    },
+                api = GritHubApiClient(
+                    self.hass,
+                    normalized[CONF_BASE_URL],
+                    normalized[CONF_TOKEN],
+                    normalized[CONF_VERIFY_SSL],
                 )
+                try:
+                    hub = await api.get_hub()
+                    if not _valid_authenticated_hub(hub):
+                        raise GritHubApiError(
+                            "Authenticated hub response is invalid"
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except GritHubApiError as err:
+                    errors["base"] = _api_failure_code(err)
+                except Exception:
+                    errors["base"] = "cannot_connect"
+                else:
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates=normalized,
+                        options_updates={
+                            CONF_SCAN_INTERVAL: normalized[CONF_SCAN_INTERVAL]
+                        },
+                    )
 
         return self.async_show_form(
             step_id="reconfigure",

@@ -82,6 +82,9 @@ class FakeClient:
         synchronous_connect: bool = False,
         synchronous_disconnect: bool = False,
         subscribe_result: Any = 0,
+        subscribe_message_id: int = 1,
+        synchronous_suback: bool = False,
+        suback_reason_codes: list[Any] | None = None,
     ) -> None:
         self.connect_error = connect_error
         self.loop_start_error = loop_start_error
@@ -91,6 +94,9 @@ class FakeClient:
         self.synchronous_connect = synchronous_connect
         self.synchronous_disconnect = synchronous_disconnect
         self.subscribe_result = subscribe_result
+        self.subscribe_message_id = subscribe_message_id
+        self.synchronous_suback = synchronous_suback
+        self.suback_reason_codes = suback_reason_codes or [0]
 
         self.constructor_kwargs: dict[str, Any] = {}
         self.credentials: tuple[str, str | None] | None = None
@@ -106,6 +112,7 @@ class FakeClient:
         self.on_connect: Callable[..., None] | None = None
         self.on_disconnect: Callable[..., None] | None = None
         self.on_message: Callable[..., None] | None = None
+        self.on_subscribe: Callable[..., None] | None = None
 
     def tls_set(self) -> None:
         self.tls_set_calls += 1
@@ -118,6 +125,7 @@ class FakeClient:
         self.call_order.append("tls_insecure_set")
     def username_pw_set(self, username: str, password: str | None) -> None:
         self.credentials = (username, password)
+
 
     def connect(self, host: str, port: int, *, keepalive: int) -> None:
         self.connect_calls.append((host, port, keepalive))
@@ -140,7 +148,14 @@ class FakeClient:
 
     def subscribe(self, topic: str, *, qos: int) -> tuple[Any, int]:
         self.subscribe_calls.append((topic, qos))
-        return self.subscribe_result, 1
+        if self.synchronous_suback and self.on_subscribe is not None:
+            self.on_subscribe(
+                self,
+                None,
+                self.subscribe_message_id,
+                self.suback_reason_codes,
+            )
+        return self.subscribe_result, self.subscribe_message_id
 
     def disconnect(self) -> None:
         self.disconnect_calls += 1
@@ -263,6 +278,26 @@ class GritLiveMqttTests(unittest.TestCase):
         self.assertIsNone(client._client)
         self.assertIs(client._state, MQTT_MODULE._LifecycleState.STOPPED)
 
+    def _acknowledge_subscription(
+        self,
+        fake: FakeClient,
+        *,
+        message_id: int | None = None,
+        reason_codes: list[Any] | None = None,
+    ) -> None:
+        self.assertIsNotNone(fake.on_subscribe)
+        fake.on_subscribe(
+            fake,
+            None,
+            fake.subscribe_message_id if message_id is None else message_id,
+            [0] if reason_codes is None else reason_codes,
+        )
+
+    def _connect_and_acknowledge(self, fake: FakeClient) -> None:
+        self.assertIsNotNone(fake.on_connect)
+        fake.on_connect(fake, None, None, 0)
+        self._acknowledge_subscription(fake)
+
     def test_module_load_does_not_import_paho(self) -> None:
         self.assertFalse(any(name.startswith("paho") for name in MODULE_IMPORTS))
 
@@ -312,15 +347,75 @@ class GritLiveMqttTests(unittest.TestCase):
 
         self.assertEqual(states, [])
         fake.on_connect(fake, None, None, 0)
+        self.assertEqual(states, [])
+        self.assertFalse(client.connected)
+        self._acknowledge_subscription(fake)
         self.assertEqual(states, [True])
         self.assertTrue(client.connected)
-        fake.on_connect(fake, None, None, 0)
-        self.assertEqual(states, [True])
         fake.on_disconnect(fake, None, 1)
         fake.on_disconnect(fake, None, 1)
         self.assertEqual(states, [True, False])
         self.assertFalse(client.connected)
         client.stop()
+
+    def test_mismatched_suback_is_ignored_until_matching_suback(self) -> None:
+        states: list[bool] = []
+        fake = FakeClient(subscribe_message_id=17)
+        factory = FakeClientFactory([fake])
+        client = self._new_client(connection_state_callback=states.append)
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        fake.on_connect(fake, None, None, 0)
+        self._acknowledge_subscription(fake, message_id=18)
+        self.assertFalse(client.connected)
+        self.assertEqual(states, [])
+        self._acknowledge_subscription(fake)
+        self.assertTrue(client.connected)
+        self.assertEqual(states, [True])
+        client.stop()
+
+    def test_failed_or_malformed_suback_never_marks_connected(self) -> None:
+        for reason_codes in ([1], [BadReasonCode()]):
+            with self.subTest(reason_codes=reason_codes):
+                states: list[bool] = []
+                fake = FakeClient()
+                factory = FakeClientFactory([fake])
+                client = self._new_client(connection_state_callback=states.append)
+                with self._paho_patch(factory):
+                    self.assertTrue(client.start())
+                fake.on_connect(fake, None, None, 0)
+                self._acknowledge_subscription(fake, reason_codes=reason_codes)
+                self.assertFalse(client.connected)
+                self.assertEqual(states, [False])
+                client.stop()
+
+    def test_synchronous_suback_during_subscribe_is_accepted(self) -> None:
+        fake = FakeClient(
+            synchronous_connect=True,
+            synchronous_suback=True,
+            subscribe_message_id=23,
+        )
+        factory = FakeClientFactory([fake])
+        client = self._new_client()
+        with self._paho_patch(factory):
+            thread, results, errors = self._start_thread(client.start)
+            self._join_thread(thread, errors)
+        self.assertEqual(results, [True])
+        self.assertTrue(client.connected)
+        client.stop()
+
+    def test_late_suback_after_stop_is_ignored(self) -> None:
+        states: list[bool] = []
+        fake = FakeClient()
+        factory = FakeClientFactory([fake])
+        client = self._new_client(connection_state_callback=states.append)
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        fake.on_connect(fake, None, None, 0)
+        client.stop()
+        self._acknowledge_subscription(fake)
+        self.assertFalse(client.connected)
+        self.assertEqual(states, [])
 
     def test_connection_rejection_reports_not_connected(self) -> None:
         states: list[bool] = []
@@ -364,6 +459,7 @@ class GritLiveMqttTests(unittest.TestCase):
             (FABRICATED_USERNAME, FABRICATED_PASSWORD),
         )
         fake.on_connect(fake, None, None, 0)
+        self._acknowledge_subscription(fake)
         self.assertTrue(client.connected)
         self.assertEqual(
             fake.subscribe_calls,
@@ -470,8 +566,10 @@ class GritLiveMqttTests(unittest.TestCase):
             thread, results, errors = self._start_thread(client.start)
             self._join_thread(thread, errors)
         self.assertEqual(results, [True])
-        self.assertTrue(client.connected)
+        self.assertFalse(client.connected)
         self.assertEqual(len(fake.subscribe_calls), 1)
+        self._acknowledge_subscription(fake)
+        self.assertTrue(client.connected)
         client.stop()
 
     def test_synchronous_disconnect_callback_during_stop_does_not_deadlock(self) -> None:
@@ -508,6 +606,7 @@ class GritLiveMqttTests(unittest.TestCase):
             client.stop()
             self.assertTrue(client.start())
         replacement.on_connect(replacement, None, None, 0)
+        self._acknowledge_subscription(replacement)
         self.assertTrue(client.connected)
         self.assertEqual(states, [True])
         old.on_disconnect(old, None, 1)
@@ -547,6 +646,7 @@ class GritLiveMqttTests(unittest.TestCase):
         with self._paho_patch(factory):
             self.assertTrue(client.start())
         fake = factory.instances[0]
+        self._connect_and_acknowledge(fake)
         fake.on_message(
             fake,
             None,
@@ -574,6 +674,7 @@ class GritLiveMqttTests(unittest.TestCase):
             self.assertTrue(client.start())
         fake = factory.instances[0]
         fake.on_message(fake, None, FakeMessage(payload, topic))
+        self._connect_and_acknowledge(fake)
         self.assertEqual(received, [])
         client.stop()
 
@@ -626,6 +727,42 @@ class GritLiveMqttTests(unittest.TestCase):
         self.assertFalse(client.connected)
         fake.subscribe_result = BadReasonCode()
         fake.on_connect(fake, None, None, 0)
+        client.stop()
+
+    def test_message_before_matching_suback_is_ignored(self) -> None:
+        received: list[tuple[Any, ...]] = []
+        fake = FakeClient()
+        factory = FakeClientFactory([fake])
+        client = self._new_client(lambda *args: received.append(args))
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        fake.on_connect(fake, None, None, 0)
+        fake.on_message(
+            fake,
+            None,
+            FakeMessage(b'{"state": true}', FABRICATED_TOPIC),
+        )
+        self.assertEqual(received, [])
+        client.stop()
+
+    def test_payload_is_sanitized_before_callback_delivery(self) -> None:
+        received: list[tuple[Any, ...]] = []
+        fake = FakeClient()
+        factory = FakeClientFactory([fake])
+        client = self._new_client(lambda *args: received.append(args))
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        self._connect_and_acknowledge(fake)
+        fake.on_message(
+            fake,
+            None,
+            FakeMessage(
+                b'{"state": true, "user": "person", '
+                b'"credential": "secret", "nested": {"raw": true}}',
+                FABRICATED_TOPIC,
+            ),
+        )
+        self.assertEqual(received[-1][-1], {"state": True})
         client.stop()
 
     def test_tls_disabled_invokes_no_tls_methods(self) -> None:
@@ -692,7 +829,7 @@ class GritLiveMqttTests(unittest.TestCase):
             with self._paho_patch(factory):
                 self.assertTrue(client.start())
             fake = factory.instances[0]
-            fake.on_connect(fake, None, None, 0)
+            self._connect_and_acknowledge(fake)
             fake.on_message(
                 fake,
                 None,
