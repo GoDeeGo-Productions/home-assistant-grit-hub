@@ -1,6 +1,7 @@
 """Network-free tests for Home Assistant entities backed by sanitized MQTT state."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from enum import IntFlag
 import importlib.util
@@ -9,7 +10,7 @@ from pathlib import Path
 import socket
 import sys
 import types
-from typing import Any
+from typing import Any, Callable
 import unittest
 from unittest import mock
 
@@ -20,6 +21,8 @@ ENTRY_ID = "entry-fabricated"
 GATE_ID = "gate-fabricated"
 SWITCH_ID = "switch-fabricated"
 MQTT_STATE_KEY = "_grit_mqtt"
+HUB_ID = "0123456789abcdef0123456789abcdef"
+HUB_IP = "192.0.2.44"
 
 
 class DeviceInfo(dict):
@@ -76,7 +79,24 @@ class BinarySensorDeviceClass:
     CONNECTIVITY = "connectivity"
 
 
+class ButtonEntity:
+    pass
+
+
+class NumberEntity:
+    pass
+
+
+class NumberMode:
+    SLIDER = "slider"
+
+
+class LockEntity:
+    pass
+
+
 class EntityCategory:
+    CONFIG = "config"
     DIAGNOSTIC = "diagnostic"
 
 
@@ -172,8 +192,16 @@ def _install_home_assistant_stubs() -> None:
     binary_sensor = types.ModuleType("homeassistant.components.binary_sensor")
     binary_sensor.BinarySensorEntity = BinarySensorEntity
     binary_sensor.BinarySensorDeviceClass = BinarySensorDeviceClass
+    button = types.ModuleType("homeassistant.components.button")
+    button.ButtonEntity = ButtonEntity
+    number = types.ModuleType("homeassistant.components.number")
+    number.NumberEntity = NumberEntity
+    number.NumberMode = NumberMode
+    lock = types.ModuleType("homeassistant.components.lock")
+    lock.LockEntity = LockEntity
     const = types.ModuleType("homeassistant.const")
     const.EntityCategory = EntityCategory
+    const.PERCENTAGE = "%"
     exceptions = types.ModuleType("homeassistant.exceptions")
     exceptions.HomeAssistantError = HomeAssistantError
     device_registry = types.ModuleType("homeassistant.helpers.device_registry")
@@ -189,6 +217,9 @@ def _install_home_assistant_stubs() -> None:
     components.switch = switch
     components.sensor = sensor
     components.binary_sensor = binary_sensor
+    components.button = button
+    components.number = number
+    components.lock = lock
     helpers.device_registry = device_registry
     helpers.update_coordinator = update_coordinator
 
@@ -200,6 +231,9 @@ def _install_home_assistant_stubs() -> None:
         switch,
         sensor,
         binary_sensor,
+        button,
+        number,
+        lock,
         const,
         exceptions,
         device_registry,
@@ -234,7 +268,16 @@ def _load_modules() -> dict[str, types.ModuleType]:
     const_spec.loader.exec_module(const_module)
 
     loaded: dict[str, types.ModuleType] = {"const": const_module}
-    for name in ("entity", "cover", "switch", "sensor", "binary_sensor"):
+    for name in (
+        "entity",
+        "cover",
+        "switch",
+        "sensor",
+        "binary_sensor",
+        "button",
+        "number",
+        "lock",
+    ):
         spec = importlib.util.spec_from_file_location(
             f"{package_name}.{name}", COMPONENT_ROOT / f"{name}.py"
         )
@@ -251,6 +294,9 @@ COVER_MODULE = MODULES["cover"]
 SWITCH_MODULE = MODULES["switch"]
 SENSOR_MODULE = MODULES["sensor"]
 BINARY_SENSOR_MODULE = MODULES["binary_sensor"]
+BUTTON_MODULE = MODULES["button"]
+NUMBER_MODULE = MODULES["number"]
+LOCK_MODULE = MODULES["lock"]
 CONST_MODULE = MODULES["const"]
 
 
@@ -259,22 +305,80 @@ class FakeApi:
 
     def __init__(self) -> None:
         self.command_calls = 0
+        self.hub_calls: list[tuple[Any, ...]] = []
 
     async def set_device_state(self, *_args: Any, **_kwargs: Any) -> None:
         self.command_calls += 1
         raise AssertionError("physical device command is forbidden")
 
+    async def set_gritlock(self, locked: bool) -> None:
+        self.hub_calls.append(("set_gritlock", locked))
+
+    async def set_system_led_brightness(
+        self,
+        hub_id: str,
+        brightness: int,
+    ) -> None:
+        self.hub_calls.append(("set_led", hub_id, brightness))
+
+    async def restart_service(self) -> None:
+        self.hub_calls.append(("restart_service",))
+
+    async def reboot_hub(self) -> None:
+        self.hub_calls.append(("reboot_hub",))
+
 
 class FakeCoordinator:
     def __init__(self, devices: dict[str, list[dict[str, Any]]]) -> None:
-        self.data = {"devices": devices}
+        self.data = {
+            "devices": devices,
+            "hub": {
+                "id": HUB_ID,
+                "displayName": "Fabricated Hub",
+                "hubVersion": "1.2.3-test",
+                "ipAddressEthernet": HUB_IP,
+                "connectedToInternet": True,
+                "branch": "fabricated-branch",
+                "systemLedBrightness": 42,
+                "disableHubButtons": False,
+            },
+        }
         self.last_update_success = True
         self.mqtt_connected = True
         self.api = FakeApi()
         self.listener_updates = 0
+        self.gritlock_state_value: bool | None = None
+        self.refresh_hook: Callable[[], None] | None = None
+        self.refresh_block: asyncio.Event | None = None
+        self.refresh_calls = 0
+        self.refresh_sequence = 1
+        self.hub_update_sequence = 1
+        self.gritlock_update_sequence = 1
+
+    @property
+    def hub_data(self) -> dict[str, Any]:
+        hub = self.data.get("hub")
+        return hub if isinstance(hub, dict) else {}
+
+    @property
+    def hub_id(self) -> str | None:
+        value = self.hub_data.get("id")
+        return value if isinstance(value, str) else None
+
+    @property
+    def gritlock_state(self) -> bool | None:
+        return self.gritlock_state_value
 
     async def async_request_refresh(self) -> None:
-        raise AssertionError("REST refresh is forbidden in entity state tests")
+        self.refresh_calls += 1
+        self.refresh_sequence += 1
+        if self.refresh_block is not None:
+            await self.refresh_block.wait()
+        if self.refresh_hook is None:
+            raise AssertionError(
+                "unexpected REST refresh in entity state test"
+            )
+        self.refresh_hook()
 
     def set_mqtt_connected(self, connected: bool) -> bool:
         if self.mqtt_connected == connected:
@@ -299,6 +403,8 @@ class FakeEntry:
 
 class EntityMqttTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self.addCleanup(self.loop.close)
         connect_patch = mock.patch.object(
             socket.socket,
             "connect",
@@ -558,6 +664,200 @@ class EntityMqttTests(unittest.TestCase):
             self.assertIn(ENTRY_ID, unique_id)
             self.assertNotIn("grit/", unique_id)
 
+    def test_hub_device_identity_and_metadata_are_stable(self):
+        entity = SENSOR_MODULE.GritHubIpAddressSensor(self.coordinator)
+        original = entity.device_info
+        self.assertEqual(
+            original["identifiers"],
+            {(CONST_MODULE.DOMAIN, "hub")},
+        )
+        self.assertEqual(original["name"], "Fabricated Hub")
+        self.assertEqual(original["sw_version"], "1.2.3-test")
+
+        self.coordinator.data["hub"]["id"] = (
+            "fedcba9876543210fedcba9876543210"
+        )
+        self.coordinator.data["hub"]["displayName"] = "Renamed Hub"
+        self.coordinator.data["hub"]["hubVersion"] = "2.0-test"
+        updated = entity.device_info
+        self.assertEqual(updated["identifiers"], original["identifiers"])
+        self.assertEqual(updated["name"], "Renamed Hub")
+        self.assertEqual(updated["sw_version"], "2.0-test")
+
+    def test_core_hub_diagnostics_use_only_sanitized_fields(self):
+        internet = (
+            BINARY_SENSOR_MODULE.GritHubInternetConnectivityBinarySensor(
+                self.coordinator
+            )
+        )
+        buttons = (
+            BINARY_SENSOR_MODULE.GritHubPhysicalButtonsDisabledBinarySensor(
+                self.coordinator
+            )
+        )
+        ip_sensor = SENSOR_MODULE.GritHubIpAddressSensor(self.coordinator)
+        version = SENSOR_MODULE.GritHubSoftwareVersionSensor(
+            self.coordinator
+        )
+        branch = SENSOR_MODULE.GritHubSoftwareBranchSensor(self.coordinator)
+
+        self.assertTrue(internet.is_on)
+        self.assertFalse(buttons.is_on)
+        self.assertEqual(ip_sensor.native_value, HUB_IP)
+        self.assertEqual(version.native_value, "1.2.3-test")
+        self.assertEqual(branch.native_value, "fabricated-branch")
+
+        sensitive = "fabricated-sensitive-hub-value"
+        self.coordinator.data["hub"].update(
+            {
+                "wifiPassword": sensitive,
+                "rawResponse": {"value": sensitive},
+            }
+        )
+        exposed = repr(
+            [
+                internet.is_on,
+                buttons.is_on,
+                ip_sensor.native_value,
+                version.native_value,
+                branch.native_value,
+                ip_sensor.device_info,
+            ]
+        )
+        for excluded in (
+            sensitive,
+            CONST_MODULE.DEFAULT_MQTT_USERNAME,
+            CONST_MODULE.DEFAULT_MQTT_PASSWORD,
+        ):
+            self.assertNotIn(excluded, exposed)
+        self.assertNotIn(
+            CONST_MODULE.DEFAULT_MQTT_USERNAME,
+            repr(self.coordinator.data),
+        )
+        for entity in (internet, buttons, ip_sensor, version, branch):
+            self.assertFalse(hasattr(entity, "extra_state_attributes"))
+
+    def test_led_brightness_is_bounded_and_requires_new_hub_response(self):
+        entity = NUMBER_MODULE.GritHubSystemLedBrightnessNumber(
+            self.coordinator
+        )
+        self.assertEqual(entity.native_value, 42)
+        self.assertEqual(entity._attr_native_min_value, 0)
+        self.assertEqual(entity._attr_native_max_value, 100)
+        self.assertEqual(entity._attr_native_step, 1)
+        self.assertEqual(entity._attr_entity_category, EntityCategory.CONFIG)
+        self.assertTrue(entity.available)
+
+        def confirm_brightness() -> None:
+            self.coordinator.data["hub"]["systemLedBrightness"] = 55
+            self.coordinator.hub_update_sequence = (
+                self.coordinator.refresh_sequence
+            )
+
+        self.coordinator.refresh_hook = confirm_brightness
+        self.loop.run_until_complete(entity.async_set_native_value(55))
+        self.assertEqual(
+            self.coordinator.api.hub_calls,
+            [("set_led", HUB_ID, 55)],
+        )
+        self.assertEqual(self.coordinator.refresh_calls, 1)
+        self.assertEqual(entity.native_value, 55)
+
+        for invalid in (-1, 101, 1.5, True):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(HomeAssistantError):
+                    self.loop.run_until_complete(
+                        entity.async_set_native_value(invalid)
+                    )
+        self.assertEqual(len(self.coordinator.api.hub_calls), 1)
+
+        self.coordinator.refresh_hook = lambda: None
+        with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+            self.loop.run_until_complete(entity.async_set_native_value(55))
+        self.assertEqual(entity.native_value, 55)
+
+        self.coordinator.refresh_block = asyncio.Event()
+        with mock.patch.object(NUMBER_MODULE, "HUB_CONFIRM_TIMEOUT", 0.01):
+            with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+                self.loop.run_until_complete(
+                    entity.async_set_native_value(56)
+                )
+        self.coordinator.refresh_block = None
+        self.assertEqual(entity.native_value, 55)
+
+    def test_gritlock_state_and_post_command_confirmation(self):
+        entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)
+        self.assertEqual(
+            entity._attr_unique_id,
+            "grit_hub_system_gritlock",
+        )
+        for value in (True, False, None):
+            with self.subTest(value=value):
+                self.coordinator.gritlock_state_value = value
+                self.assertIs(entity.is_locked, value)
+
+        self.coordinator.gritlock_state_value = None
+        self.coordinator.refresh_hook = lambda: None
+        with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+            self.loop.run_until_complete(entity.async_lock())
+        self.assertIsNone(entity.is_locked)
+        self.assertEqual(
+            self.coordinator.api.hub_calls[-1],
+            ("set_gritlock", True),
+        )
+
+        def confirm_locked() -> None:
+            self.coordinator.gritlock_state_value = True
+            self.coordinator.gritlock_update_sequence = (
+                self.coordinator.refresh_sequence
+            )
+
+        self.coordinator.refresh_hook = confirm_locked
+        self.loop.run_until_complete(entity.async_lock())
+        self.assertTrue(entity.is_locked)
+
+        self.coordinator.refresh_block = asyncio.Event()
+        with mock.patch.object(LOCK_MODULE, "HUB_CONFIRM_TIMEOUT", 0.01):
+            with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+                self.loop.run_until_complete(entity.async_unlock())
+        self.assertIsNone(entity.is_locked)
+
+        def confirm_later_unlock() -> None:
+            self.coordinator.gritlock_state_value = False
+            self.coordinator.gritlock_update_sequence = (
+                self.coordinator.refresh_sequence
+            )
+
+        self.coordinator.refresh_block = None
+        self.coordinator.refresh_hook = confirm_later_unlock
+        self.loop.run_until_complete(
+            self.coordinator.async_request_refresh()
+        )
+        self.assertFalse(entity.is_locked)
+        self.assertEqual(
+            self.coordinator.api.hub_calls[-3:],
+            [
+                ("set_gritlock", True),
+                ("set_gritlock", True),
+                ("set_gritlock", False),
+            ],
+        )
+
+    def test_restart_and_reboot_buttons_use_only_explicit_fake_methods(self):
+        restart = BUTTON_MODULE.GritHubRestartServiceButton(
+            self.coordinator
+        )
+        reboot = BUTTON_MODULE.GritHubRebootHubButton(self.coordinator)
+        self.assertFalse(reboot._attr_entity_registry_enabled_default)
+
+        self.loop.run_until_complete(restart.async_press())
+        self.loop.run_until_complete(reboot.async_press())
+
+        self.assertEqual(
+            self.coordinator.api.hub_calls,
+            [("restart_service",), ("reboot_hub",)],
+        )
+        self.assertEqual(self.coordinator.refresh_calls, 0)
     def test_exposed_state_and_attributes_contain_no_raw_mqtt_values(self):
         topic = "grit/private-hub/gate/private-device/status"
         payload = "fabricated-private-payload"

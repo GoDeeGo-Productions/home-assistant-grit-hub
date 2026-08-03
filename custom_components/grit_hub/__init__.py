@@ -29,6 +29,8 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
     CONF_VERIFY_SSL,
+    DEFAULT_MQTT_PASSWORD,
+    DEFAULT_MQTT_USERNAME,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_MQTT_HOST_LENGTH,
@@ -173,6 +175,9 @@ def _validate_mqtt_settings(
         password = password_value if password_value.strip() else None
     if password is not None and username is None:
         raise _invalid_mqtt_config()
+    if username is None and password is None:
+        username = DEFAULT_MQTT_USERNAME
+        password = DEFAULT_MQTT_PASSWORD
 
     return _MqttSettings(
         host=host,
@@ -267,6 +272,23 @@ async def _stop_runtime(
         _clear_runtime_data(entry, runtime)
 
 
+async def _unload_partial_platforms(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Best-effort rollback after platform forwarding has begun."""
+    try:
+        unloaded = await hass.config_entries.async_unload_platforms(
+            entry,
+            PLATFORMS,
+        )
+    except Exception:
+        _LOGGER.warning("GRIT platform rollback failed")
+    else:
+        if not unloaded:
+            _LOGGER.warning("GRIT platform rollback was incomplete")
+
+
 async def _raise_mqtt_not_ready(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -286,6 +308,14 @@ async def async_setup_entry(
     entry: ConfigEntry,
 ) -> bool:
     """Set up GRIT REST discovery, then prove MQTT readiness."""
+    existing_runtime = getattr(entry, "runtime_data", None)
+    if (
+        isinstance(existing_runtime, GritHubRuntimeData)
+        and existing_runtime.active
+        and not existing_runtime.unloading
+    ):
+        return True
+
     settings = _validate_mqtt_settings(entry.data)
 
     api = GritHubApiClient(
@@ -383,31 +413,41 @@ async def async_setup_entry(
         await _raise_mqtt_not_ready(hass, entry, runtime)
     runtime.ready_future = None
 
+    forwarding_started = False
     try:
         entry.runtime_data = runtime
         hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
             "coordinator": coordinator
         }
+        forwarding_started = True
         await hass.config_entries.async_forward_entry_setups(
             entry,
             PLATFORMS,
         )
         _register_services(hass)
     except asyncio.CancelledError:
-        await _stop_runtime(
-            hass,
-            entry,
-            runtime,
-            unloading=False,
-        )
+        try:
+            if forwarding_started:
+                await _unload_partial_platforms(hass, entry)
+        finally:
+            await _stop_runtime(
+                hass,
+                entry,
+                runtime,
+                unloading=False,
+            )
         raise
     except Exception:
-        await _stop_runtime(
-            hass,
-            entry,
-            runtime,
-            unloading=False,
-        )
+        try:
+            if forwarding_started:
+                await _unload_partial_platforms(hass, entry)
+        finally:
+            await _stop_runtime(
+                hass,
+                entry,
+                runtime,
+                unloading=False,
+            )
         raise
 
     return True

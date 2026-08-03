@@ -15,6 +15,7 @@ from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_ROOT = REPOSITORY_ROOT / "custom_components" / "grit_hub"
+FABRICATED_HUB_ID = "0123456789abcdef0123456789abcdef"
 
 
 def _load_coordinator_module():
@@ -112,15 +113,31 @@ class FakeApi:
     def __init__(self, collections=None):
         self.collections = deepcopy(collections or {})
         self.health = {"status": "ok"}
-        self.hub = {"id": "rest-hub"}
+        self.hub = {
+            "id": FABRICATED_HUB_ID,
+            "displayName": "Fabricated Hub",
+            "hubVersion": "1.2.3-test",
+        }
+        self.hub_error = False
+        self.hub_calls = 0
+        self.collection_errors: set[str] = set()
 
     async def health_check(self):
         return deepcopy(self.health)
 
     async def get_hub(self):
+        self.hub_calls += 1
+        if self.hub_error:
+            raise coordinator_module.GritHubApiError(
+                "fabricated hub request failure"
+            )
         return deepcopy(self.hub)
 
     async def get_collection(self, device_type):
+        if device_type in self.collection_errors:
+            raise coordinator_module.GritHubApiError(
+                "fabricated collection request failure"
+            )
         return deepcopy(self.collections.get(device_type, []))
 
 
@@ -593,6 +610,99 @@ class CoordinatorMqttTests(unittest.TestCase):
             coordinator_module.MQTT_STATE_KEY
         ]
         self.assertEqual(state["position"], 90)
+
+    def test_hub_data_and_identity_use_last_sanitized_values(self):
+        instance = self.coordinator()
+        instance.data["hub"] = deepcopy(instance.api.hub)
+        self.assertEqual(instance.hub_data, instance.api.hub)
+        self.assertEqual(instance.hub_id, FABRICATED_HUB_ID)
+
+        instance.data["hub"] = None
+        self.assertEqual(instance.hub_data, {})
+        self.assertEqual(instance.hub_id, "hub-expected")
+
+    def test_hub_failure_preserves_last_values(self):
+        api = FakeApi()
+        api.hub_error = True
+        instance = self.coordinator(api=api)
+        previous_hub = deepcopy(api.hub)
+        instance.data["hub"] = previous_hub
+
+        refreshed = _run_immediate(instance._async_update_data())
+
+        self.assertEqual(refreshed["hub"], previous_hub)
+        self.assertIn("hub", refreshed["errors"])
+
+    def test_refresh_generations_require_successful_relevant_responses(self):
+        api = FakeApi(
+            {
+                "trigger": [
+                    {
+                        "id": "trigger-fabricated",
+                        "gritLockEnabled": True,
+                        "gritLockState": True,
+                    }
+                ]
+            }
+        )
+        instance = self.coordinator(api=api)
+        self.assertEqual(instance.refresh_sequence, 0)
+        self.assertEqual(instance.hub_update_sequence, 0)
+        self.assertEqual(instance.gritlock_update_sequence, 0)
+
+        first = _run_immediate(instance._async_update_data())
+        instance.data = first
+
+        self.assertEqual(instance.refresh_sequence, 1)
+        self.assertEqual(instance.hub_update_sequence, 1)
+        self.assertEqual(instance.gritlock_update_sequence, 1)
+        self.assertEqual(api.hub_calls, 1)
+
+        api.hub_error = True
+        api.collection_errors.add("trigger")
+        second = _run_immediate(instance._async_update_data())
+
+        self.assertEqual(instance.refresh_sequence, 2)
+        self.assertEqual(instance.hub_update_sequence, 1)
+        self.assertEqual(instance.gritlock_update_sequence, 1)
+        self.assertEqual(api.hub_calls, 2)
+        self.assertEqual(second["hub"], first["hub"])
+        self.assertIn("hub", second["errors"])
+        self.assertIn("trigger", second["errors"])
+
+    def test_gritlock_state_requires_unanimous_participating_triggers(self):
+        cases = (
+            ([], None),
+            ([{"gritLockEnabled": False}], None),
+            (
+                [
+                    {"gritLockEnabled": True, "gritLockState": True},
+                    {"gritLockEnabled": True, "gritLockState": True},
+                ],
+                True,
+            ),
+            (
+                [
+                    {"gritLockEnabled": True, "gritLockState": False},
+                    {"gritLockEnabled": True, "gritLockState": False},
+                ],
+                False,
+            ),
+            (
+                [
+                    {"gritLockEnabled": True, "gritLockState": True},
+                    {"gritLockEnabled": True, "gritLockState": False},
+                ],
+                None,
+            ),
+            ([{"gritLockEnabled": True}], None),
+        )
+        for triggers, expected in cases:
+            with self.subTest(triggers=triggers):
+                devices = _device_map()
+                devices["trigger"] = triggers
+                instance = self.coordinator(devices=devices)
+                self.assertIs(instance.gritlock_state, expected)
 
     def test_rest_refresh_re_sanitizes_preserved_state(self):
         devices = _device_map()
