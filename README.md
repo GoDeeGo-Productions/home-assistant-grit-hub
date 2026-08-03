@@ -217,7 +217,8 @@ button, raw MQTT control, backup/restore control, SSH control or tunnel control.
 REST remains authoritative for discovery, static configuration and issuing
 commands. Sanitized MQTT is authoritative for live gate position, RFID reader
 lock state and system-wide GRITLock consensus. RFID `sts.s` is interpreted only
-for RFID readers: `0` is unlocked/enabled and `1` is locked/disabled. Proven
+for RFID readers as enabled state: `0` is locked/disabled and `1` is
+unlocked/enabled. Proven
 RFID `s` and `st` messages remain supported with their explicit enabled-state
 semantics. A strict boolean REST `lockout` value is provisional startup evidence
 only; the first accepted RFID MQTT lock observation supersedes it. REST polling

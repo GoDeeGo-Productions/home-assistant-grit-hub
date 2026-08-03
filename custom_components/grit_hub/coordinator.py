@@ -433,9 +433,9 @@ def _payload_state(
 
     if device_type == "rfid":
         if root_message_type == "sts":
-            locked = _strict_binary_bool(payload.get("s", _INVALID))
-            if locked is not _INVALID:
-                updates["locked"] = locked
+            enabled = _strict_binary_bool(payload.get("s", _INVALID))
+            if enabled is not _INVALID:
+                updates["locked"] = not enabled
         elif root_message_type in {"s", "st"}:
             enabled = _first_valid(
                 payload,
