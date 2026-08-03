@@ -17,6 +17,13 @@
           "show_advanced": "Review advanced settings"
         }
       },
+      "mqtt_broker": {
+        "title": "Enter the GRIT Hub network address",
+        "description": "The GRIT Hub identity was discovered, but its local network address was not returned by the GRIT API. Enter the GRIT Hub\u2019s LAN hostname or IP address.",
+        "data": {
+          "mqtt_host": "GRIT Hub LAN hostname or IP address"
+        }
+      },
       "advanced": {
         "title": "Advanced MQTT settings",
         "description": "Automatic discovery could not validate all required MQTT settings, or advanced review was requested. Enter overrides as needed; leaving both MQTT credential fields blank uses the provisional vendor-default read-only credentials.",
@@ -66,6 +73,7 @@
     },
     "error": {
       "cannot_connect": "Could not connect to GRIT Hub. Check the API URL, token, network path and SSL setting.",
+      "mqtt_cannot_connect": "Could not validate the GRIT MQTT connection and subscription. Check the broker settings.",
       "invalid_auth": "GRIT rejected the bearer token. Enter a token accepted by the authenticated current-hub API.",
       "invalid_base_url": "Enter a valid GRIT API base URL.",
       "invalid_token": "Enter a GRIT API bearer token.",

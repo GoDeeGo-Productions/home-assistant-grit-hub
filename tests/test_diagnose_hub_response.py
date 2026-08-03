@@ -129,6 +129,9 @@ class HubResponseDiagnosticTests(unittest.TestCase):
 
         request = opened.call_args.args[0]
         self.assertEqual(
+            request.full_url, "https://api.diagnostic-test.invalid/api/hub"
+        )
+        self.assertEqual(
             request.get_header("Authorization"),
             f"Bearer {token}",
         )
@@ -184,7 +187,7 @@ class HubResponseDiagnosticTests(unittest.TestCase):
         ):
             with self.subTest(status=status):
                 error = DIAGNOSTIC.HTTPError(
-                    "https://api.diagnostic-test.invalid/api/hub/1",
+                    "https://api.diagnostic-test.invalid/api/hub",
                     status,
                     "fabricated HTTP error",
                     {},
@@ -223,7 +226,7 @@ class HubResponseDiagnosticTests(unittest.TestCase):
 
     def test_open_request_installs_fail_closed_redirect_handler(self) -> None:
         request = DIAGNOSTIC.Request(
-            "https://api.diagnostic-test.invalid/api/hub/1",
+            "https://api.diagnostic-test.invalid/api/hub",
             headers={"Authorization": f"Bearer {self.private_values[0]}"},
         )
         opener = mock.Mock()
@@ -254,7 +257,7 @@ class HubResponseDiagnosticTests(unittest.TestCase):
                 302,
                 "Found",
                 {},
-                "https://redirect.fabricated.invalid/api/hub/1",
+                "https://redirect.fabricated.invalid/api/hub",
             )
         )
 

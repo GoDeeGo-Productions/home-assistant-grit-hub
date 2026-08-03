@@ -92,7 +92,7 @@ class GritHubApiClient:
         """Read the documented current-hub response and sanitize it."""
         data = await self.request(
             "GET",
-            "/api/hub/1",
+            "/api/hub",
             timeout=REST_DISCOVERY_TIMEOUT,
         )
         return sanitize_hub_data(data)

@@ -103,10 +103,14 @@ class ApiHubTests(unittest.TestCase):
             [
                 (
                     "GET",
-                    "/api/hub/1",
+                    "/api/hub",
                     {"timeout": API.REST_DISCOVERY_TIMEOUT},
                 )
             ],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(
+            any(path == "/api/hub/1" for _method, path, _kwargs in calls)
         )
         self.assertEqual(
             set(result),
@@ -166,13 +170,13 @@ class ApiHubTests(unittest.TestCase):
         )
         client.session = FakeSession()
 
-        result = asyncio.run(client.request("GET", "/api/hub/1"))
+        result = asyncio.run(client.request("GET", "/api/hub"))
 
         self.assertIsNone(result)
         self.assertEqual(len(calls), 1)
         method, url, kwargs = calls[0]
         self.assertEqual(method, "GET")
-        self.assertEqual(url, "https://api.fabricated.invalid/api/hub/1")
+        self.assertEqual(url, "https://api.fabricated.invalid/api/hub")
         self.assertEqual(
             kwargs["headers"]["Authorization"],
             f"Bearer {FABRICATED_LEGACY_TOKEN}",
@@ -224,7 +228,7 @@ class ApiHubTests(unittest.TestCase):
             asyncio.run(
                 client.request(
                     "GET",
-                    "/api/hub/1",
+                    "/api/hub",
                     timeout=API.REST_DISCOVERY_TIMEOUT,
                 )
             )
@@ -232,12 +236,12 @@ class ApiHubTests(unittest.TestCase):
         self.assertEqual(captured.exception.http_status, 401)
         self.assertEqual(
             str(captured.exception),
-            "GET /api/hub/* failed: HTTP 401",
+            "GET /api/hub failed: HTTP 401",
         )
         self.assertNotIn(private_body, repr(captured.exception))
         method, url, kwargs = calls[0]
         self.assertEqual(method, "GET")
-        self.assertEqual(url, "https://api.fabricated.invalid/api/hub/1")
+        self.assertEqual(url, "https://api.fabricated.invalid/api/hub")
         self.assertNotIn("fabricated-api-token", url)
         self.assertEqual(
             kwargs["headers"]["Authorization"],

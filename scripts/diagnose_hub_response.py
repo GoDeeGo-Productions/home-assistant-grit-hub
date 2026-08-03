@@ -195,7 +195,7 @@ def fetch_summary(
         return _error_summary("invalid_token")
 
     request = Request(
-        f"{base_url}/api/hub/1",
+        f"{base_url}/api/hub",
         headers={
             "Authorization": authorization,
             "Accept": "application/json",
@@ -238,7 +238,7 @@ def fetch_summary(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Fetch GET /api/hub/1 and print only allowlisted structural metadata."
+            "Fetch GET /api/hub and print only allowlisted structural metadata."
         )
     )
     parser.add_argument("--base-url", required=True)
