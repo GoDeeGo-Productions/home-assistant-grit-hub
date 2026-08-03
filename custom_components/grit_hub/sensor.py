@@ -13,7 +13,13 @@ from .entity import GritHubEntity
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    entities = [GritHubStatusSensor(coordinator), GritHubDeviceCountSensor(coordinator)]
+    entities = [
+        GritHubStatusSensor(coordinator),
+        GritHubDeviceCountSensor(coordinator),
+        GritHubIpAddressSensor(coordinator),
+        GritHubSoftwareVersionSensor(coordinator),
+        GritHubSoftwareBranchSensor(coordinator),
+    ]
     for dev_type in SENSOR_DEVICE_TYPES:
         for dev in coordinator.data.get("devices", {}).get(dev_type, []):
             if obj_id(dev) is not None:
@@ -58,6 +64,42 @@ class GritHubDeviceCountSensor(GritHubEntity, SensorEntity):
     @property
     def native_value(self):
         return sum(len(v) for v in self.coordinator.data.get("devices", {}).values())
+
+
+class GritHubIpAddressSensor(GritHubEntity, SensorEntity):
+    _attr_name = "Hub IP Address"
+    _attr_unique_id = "grit_hub_ip_address"
+    _attr_icon = "mdi:ip-network"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self) -> str | None:
+        value = self.hub_data.get("ipAddressEthernet")
+        return value if isinstance(value, str) else None
+
+
+class GritHubSoftwareVersionSensor(GritHubEntity, SensorEntity):
+    _attr_name = "Hub Software Version"
+    _attr_unique_id = "grit_hub_software_version"
+    _attr_icon = "mdi:chip"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self) -> str | None:
+        value = self.hub_data.get("hubVersion")
+        return value if isinstance(value, str) else None
+
+
+class GritHubSoftwareBranchSensor(GritHubEntity, SensorEntity):
+    _attr_name = "Software Branch"
+    _attr_unique_id = "grit_hub_software_branch"
+    _attr_icon = "mdi:source-branch"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self) -> str | None:
+        value = self.hub_data.get("branch")
+        return value if isinstance(value, str) else None
 
 
 class GritHubGenericDeviceSensor(GritHubEntity, SensorEntity):

@@ -1,6 +1,7 @@
-"""Network-free tests for GRIT MQTT configuration flows."""
+"""Network-free tests for GRIT installation and MQTT configuration flows."""
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 import importlib.util
 import logging
@@ -14,11 +15,12 @@ from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_ROOT = REPOSITORY_ROOT / "custom_components" / "grit_hub"
+PACKAGE_NAME = "_grit_config_flow_tests"
 
 FABRICATED_BASE_URL = "https://api.config-test.invalid"
 FABRICATED_TOKEN = "fabricated-api-token"
-FABRICATED_MQTT_HOST = "broker.config-test.invalid"
-FABRICATED_HUB_ID = "hub-config-test"
+FABRICATED_MQTT_HOST = "192.0.2.44"
+FABRICATED_HUB_ID = "0123456789abcdef0123456789abcdef"
 FABRICATED_USERNAME = "fabricated-mqtt-user"
 FABRICATED_PASSWORD = "fabricated-mqtt-password"
 
@@ -80,20 +82,37 @@ class FakeEntry:
         self.options = deepcopy(options or {})
 
 
+class FakeHass:
+    def __init__(self):
+        self.executor_calls = []
+
+    async def async_add_executor_job(self, function, *args):
+        self.executor_calls.append((function, args))
+        return function(*args)
+
+
 class _FlowBase:
     def __init__(self):
-        self.hass = types.SimpleNamespace()
+        self.hass = FakeHass()
         self.created_entries = []
         self.updated_entries = []
         self._reconfigure_entry = None
         self.unique_id = None
 
-    def async_show_form(self, *, step_id, data_schema, errors=None):
+    def async_show_form(
+        self,
+        *,
+        step_id,
+        data_schema,
+        errors=None,
+        description_placeholders=None,
+    ):
         return {
             "type": "form",
             "step_id": step_id,
             "data_schema": data_schema,
             "errors": errors or {},
+            "description_placeholders": description_placeholders or {},
         }
 
     def async_create_entry(self, *, title, data):
@@ -140,17 +159,32 @@ class FakeApiError(Exception):
 
 class FakeApi:
     health_calls = 0
+    hub_calls = 0
     constructor_tokens = []
+    health_error = False
+    hub_error = False
+    hub_values = {}
+    read_events = []
 
     def __init__(self, _hass, _base_url, token, _verify_ssl):
         type(self).constructor_tokens.append(token)
 
     async def health_check(self):
         type(self).health_calls += 1
+        type(self).read_events.append("health")
+        if type(self).health_error:
+            raise FakeApiError("fabricated health failure")
         return {"status": "ok"}
 
+    async def get_hub(self):
+        type(self).hub_calls += 1
+        type(self).read_events.append("hub")
+        if type(self).hub_error:
+            raise FakeApiError("fabricated hub failure")
+        return deepcopy(type(self).hub_values)
 
-def _install_stubs(package_name):
+
+def _install_stubs():
     voluptuous = types.ModuleType("voluptuous")
     voluptuous.Required = Required
     voluptuous.Optional = Optional
@@ -182,28 +216,27 @@ def _install_stubs(package_name):
     sys.modules["homeassistant.helpers"] = helpers
     sys.modules["homeassistant.helpers.selector"] = selector
 
-    api = types.ModuleType(f"{package_name}.api")
+    api = types.ModuleType(f"{PACKAGE_NAME}.api")
     api.GritHubApiClient = FakeApi
     api.GritHubApiError = FakeApiError
     sys.modules[api.__name__] = api
 
 
 def _load_config_flow():
-    package_name = "_grit_config_flow_tests"
-    package = types.ModuleType(package_name)
+    package = types.ModuleType(PACKAGE_NAME)
     package.__path__ = [str(COMPONENT_ROOT)]
-    sys.modules[package_name] = package
-    _install_stubs(package_name)
+    sys.modules[PACKAGE_NAME] = package
+    _install_stubs()
 
     const_spec = importlib.util.spec_from_file_location(
-        f"{package_name}.const", COMPONENT_ROOT / "const.py"
+        f"{PACKAGE_NAME}.const", COMPONENT_ROOT / "const.py"
     )
     const_module = importlib.util.module_from_spec(const_spec)
     sys.modules[const_spec.name] = const_module
     const_spec.loader.exec_module(const_module)
 
     flow_spec = importlib.util.spec_from_file_location(
-        f"{package_name}.config_flow", COMPONENT_ROOT / "config_flow.py"
+        f"{PACKAGE_NAME}.config_flow", COMPONENT_ROOT / "config_flow.py"
     )
     flow_module = importlib.util.module_from_spec(flow_spec)
     sys.modules[flow_spec.name] = flow_module
@@ -233,7 +266,36 @@ def _schema_fields(schema):
 class ConfigFlowMqttTests(unittest.TestCase):
     def setUp(self):
         FakeApi.health_calls = 0
+        FakeApi.hub_calls = 0
         FakeApi.constructor_tokens = []
+        FakeApi.health_error = False
+        FakeApi.hub_error = False
+        FakeApi.hub_values = {
+            "id": FABRICATED_HUB_ID,
+            "ipAddressEthernet": FABRICATED_MQTT_HOST,
+        }
+        FakeApi.read_events = []
+        self.probe_result = types.SimpleNamespace(
+            connected=True,
+            hub_id=FABRICATED_HUB_ID,
+            ambiguous=False,
+        )
+        self.probe_calls = []
+        self.probe_error = None
+
+        def fake_probe(host, port, **kwargs):
+            self.probe_calls.append(
+                {"host": host, "port": port, **kwargs}
+            )
+            if self.probe_error is not None:
+                raise self.probe_error
+            return self.probe_result
+
+        probe_patch = mock.patch.object(
+            FLOW_MODULE,
+            "passive_mqtt_discover",
+            side_effect=fake_probe,
+        )
         socket_patch = mock.patch.object(
             socket,
             "socket",
@@ -244,16 +306,22 @@ class ConfigFlowMqttTests(unittest.TestCase):
             "create_connection",
             side_effect=AssertionError("network connection is forbidden"),
         )
+        probe_patch.start()
         socket_patch.start()
         connection_patch.start()
+        self.addCleanup(probe_patch.stop)
         self.addCleanup(socket_patch.stop)
         self.addCleanup(connection_patch.stop)
 
-    def valid_input(self):
+    def api_input(self):
         return {
             FLOW_MODULE.CONF_BASE_URL: FABRICATED_BASE_URL,
             FLOW_MODULE.CONF_TOKEN: FABRICATED_TOKEN,
             FLOW_MODULE.CONF_VERIFY_SSL: True,
+        }
+
+    def advanced_input(self):
+        return {
             FLOW_MODULE.CONF_SCAN_INTERVAL: 30,
             FLOW_MODULE.CONF_MQTT_HOST: FABRICATED_MQTT_HOST,
             FLOW_MODULE.CONF_MQTT_PORT: 1883,
@@ -265,18 +333,40 @@ class ConfigFlowMqttTests(unittest.TestCase):
             FLOW_MODULE.CONF_MQTT_KEEPALIVE: 60,
         }
 
+    def valid_config(self):
+        return {**self.api_input(), **self.advanced_input()}
+
     def existing_entry(self):
-        data = self.valid_input()
         return FakeEntry(
-            data,
+            self.valid_config(),
             {FLOW_MODULE.CONF_SCAN_INTERVAL: 45},
         )
 
-    def submit_user(self, overrides=None):
-        user_input = self.valid_input()
+    def submit_api(self, overrides=None):
+        user_input = self.api_input()
         user_input.update(overrides or {})
         flow = FLOW_MODULE.GritHubConfigFlow()
         return flow, _run_immediate(flow.async_step_user(user_input))
+
+    def manual_flow(self):
+        self.probe_result = types.SimpleNamespace(
+            connected=False,
+            hub_id=None,
+            ambiguous=False,
+        )
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "advanced")
+        return flow, result
+
+    def complete_discovered(self):
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "confirm")
+        result = _run_immediate(
+            flow.async_step_confirm(
+                {FLOW_MODULE._CONF_SHOW_ADVANCED: False}
+            )
+        )
+        return flow, result
 
     def reconfigure_input(self, entry):
         data = deepcopy(entry.data)
@@ -294,67 +384,215 @@ class ConfigFlowMqttTests(unittest.TestCase):
         result = _run_immediate(flow.async_step_reconfigure(user_input))
         return flow, result
 
-    def assert_field_error(self, field, value, code):
-        flow, result = self.submit_user({field: value})
-        self.assertEqual(result["type"], "form")
+    def assert_advanced_error(self, field, value, code):
+        flow, _result = self.manual_flow()
+        user_input = self.advanced_input()
+        user_input[field] = value
+        result = _run_immediate(flow.async_step_advanced(user_input))
         self.assertEqual(result["errors"], {field: code})
         self.assertEqual(flow.created_entries, [])
-        self.assertEqual(FakeApi.health_calls, 0)
 
-    def test_new_entry_schema_contains_all_configuration_fields(self):
-        flow = FLOW_MODULE.GritHubConfigFlow()
-        result = _run_immediate(flow.async_step_user())
-        fields = _schema_fields(result["data_schema"])
-        expected = {
-            FLOW_MODULE.CONF_BASE_URL,
-            FLOW_MODULE.CONF_TOKEN,
-            FLOW_MODULE.CONF_VERIFY_SSL,
-            FLOW_MODULE.CONF_SCAN_INTERVAL,
-            FLOW_MODULE.CONF_MQTT_HOST,
-            FLOW_MODULE.CONF_MQTT_PORT,
-            FLOW_MODULE.CONF_MQTT_HUB_ID,
-            FLOW_MODULE.CONF_MQTT_USERNAME,
-            FLOW_MODULE.CONF_MQTT_PASSWORD,
-            FLOW_MODULE.CONF_MQTT_USE_TLS,
-            FLOW_MODULE.CONF_MQTT_VERIFY_TLS,
-            FLOW_MODULE.CONF_MQTT_KEEPALIVE,
-        }
-        self.assertEqual(set(fields), expected)
-        required = {
-            name
-            for name, (marker, _validator) in fields.items()
-            if isinstance(marker, Required)
-        }
-        self.assertTrue(
-            {
-                FLOW_MODULE.CONF_BASE_URL,
-                FLOW_MODULE.CONF_TOKEN,
-                FLOW_MODULE.CONF_VERIFY_SSL,
-                FLOW_MODULE.CONF_SCAN_INTERVAL,
-                FLOW_MODULE.CONF_MQTT_HOST,
-                FLOW_MODULE.CONF_MQTT_PORT,
-                FLOW_MODULE.CONF_MQTT_HUB_ID,
-            }.issubset(required)
-        )
-
-    def test_api_token_and_mqtt_password_use_password_selectors(self):
+    def test_initial_page_contains_only_api_fields(self):
         result = _run_immediate(
             FLOW_MODULE.GritHubConfigFlow().async_step_user()
         )
         fields = _schema_fields(result["data_schema"])
-        for field in (
-            FLOW_MODULE.CONF_TOKEN,
-            FLOW_MODULE.CONF_MQTT_PASSWORD,
-        ):
-            with self.subTest(field=field):
-                validator = fields[field][1]
-                self.assertIsInstance(validator, TextSelector)
-                self.assertEqual(
-                    validator.config.type, TextSelectorType.PASSWORD
+        self.assertEqual(
+            set(fields),
+            {
+                FLOW_MODULE.CONF_BASE_URL,
+                FLOW_MODULE.CONF_TOKEN,
+                FLOW_MODULE.CONF_VERIFY_SSL,
+            },
+        )
+        self.assertTrue(
+            all(
+                isinstance(marker, Required)
+                for marker, _validator in fields.values()
+            )
+        )
+
+    def test_api_token_and_advanced_password_use_password_selectors(self):
+        result = _run_immediate(
+            FLOW_MODULE.GritHubConfigFlow().async_step_user()
+        )
+        api_fields = _schema_fields(result["data_schema"])
+        self.assertIsInstance(
+            api_fields[FLOW_MODULE.CONF_TOKEN][1], TextSelector
+        )
+
+        _flow, result = self.manual_flow()
+        advanced_fields = _schema_fields(result["data_schema"])
+        validator = advanced_fields[FLOW_MODULE.CONF_MQTT_PASSWORD][1]
+        self.assertIsInstance(validator, TextSelector)
+        self.assertEqual(
+            validator.config.type,
+            TextSelectorType.PASSWORD,
+        )
+
+    def test_successful_rest_discovery_is_confirmed_then_stored(self):
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(
+            result["description_placeholders"],
+            {
+                "mqtt_host": FABRICATED_MQTT_HOST,
+                "mqtt_hub_id": FABRICATED_HUB_ID,
+            },
+        )
+        result = _run_immediate(
+            flow.async_step_confirm(
+                {FLOW_MODULE._CONF_SHOW_ADVANCED: False}
+            )
+        )
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(
+            result["data"][FLOW_MODULE.CONF_MQTT_HOST],
+            FABRICATED_MQTT_HOST,
+        )
+        self.assertEqual(
+            result["data"][FLOW_MODULE.CONF_MQTT_HUB_ID],
+            FABRICATED_HUB_ID,
+        )
+        self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_USERNAME])
+        self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD])
+        self.assertNotIn(FLOW_MODULE.DEFAULT_MQTT_USERNAME, repr(result))
+
+    def test_rest_discovery_failure_falls_back_to_advanced(self):
+        FakeApi.hub_error = True
+        self.probe_result = types.SimpleNamespace(
+            connected=False,
+            hub_id=None,
+            ambiguous=False,
+        )
+        _flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "advanced")
+        self.assertEqual(FakeApi.hub_calls, 1)
+
+    def test_missing_documented_fields_do_not_probe_api_hostname(self):
+        cases = (
+            {"ipAddressEthernet": FABRICATED_MQTT_HOST},
+            {"id": FABRICATED_HUB_ID},
+            {
+                "id": "malformed",
+                "ipAddressEthernet": FABRICATED_MQTT_HOST,
+            },
+            {
+                "id": FABRICATED_HUB_ID,
+                "ipAddressEthernet": "not-an-ip",
+            },
+        )
+        for values in cases:
+            with self.subTest(values=values):
+                FakeApi.hub_values = values
+                self.probe_calls.clear()
+                _flow, result = self.submit_api()
+                self.assertEqual(result["step_id"], "advanced")
+                self.assertEqual(self.probe_calls, [])
+
+    def test_mqtt_timeout_is_bounded_and_shows_manual_fallback(self):
+        _flow, result = self.manual_flow()
+        self.assertEqual(result["step_id"], "advanced")
+        self.assertEqual(len(self.probe_calls), 1)
+        self.assertEqual(
+            self.probe_calls[0]["timeout"],
+            FLOW_MODULE.MQTT_DISCOVERY_TIMEOUT,
+        )
+
+    def test_manual_fallback_creates_complete_entry(self):
+        flow, _result = self.manual_flow()
+        result = _run_immediate(
+            flow.async_step_advanced(self.advanced_input())
+        )
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(result["data"], self.valid_config())
+
+    def test_advanced_overrides_replace_discovered_values(self):
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "confirm")
+        result = _run_immediate(
+            flow.async_step_confirm(
+                {FLOW_MODULE._CONF_SHOW_ADVANCED: True}
+            )
+        )
+        self.assertEqual(result["step_id"], "advanced")
+        fields = _schema_fields(result["data_schema"])
+        self.assertEqual(
+            fields[FLOW_MODULE.CONF_MQTT_HOST][0].default,
+            FABRICATED_MQTT_HOST,
+        )
+        values = self.advanced_input()
+        values[FLOW_MODULE.CONF_MQTT_HOST] = "override.config-test.invalid"
+        values[FLOW_MODULE.CONF_MQTT_HUB_ID] = "hub-override"
+        values[FLOW_MODULE.CONF_MQTT_PORT] = 8883
+        created = _run_immediate(flow.async_step_advanced(values))
+        self.assertEqual(
+            created["data"][FLOW_MODULE.CONF_MQTT_HOST],
+            "override.config-test.invalid",
+        )
+        self.assertEqual(
+            created["data"][FLOW_MODULE.CONF_MQTT_HUB_ID],
+            "hub-override",
+        )
+        self.assertEqual(
+            created["data"][FLOW_MODULE.CONF_MQTT_PORT],
+            8883,
+        )
+
+    def test_health_failure_prevents_all_discovery(self):
+        FakeApi.health_error = True
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "user")
+        self.assertEqual(result["errors"], {"base": "cannot_connect"})
+        self.assertEqual(FakeApi.hub_calls, 0)
+        self.assertEqual(self.probe_calls, [])
+        self.assertEqual(flow.hass.executor_calls, [])
+
+    def test_discovery_performs_one_read_sequence_and_one_probe(self):
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(FakeApi.read_events, ["health", "hub"])
+        self.assertEqual(len(self.probe_calls), 1)
+        self.assertEqual(len(flow.hass.executor_calls), 1)
+        self.assertEqual(
+            self.probe_calls[0]["username"],
+            FLOW_MODULE.DEFAULT_MQTT_USERNAME,
+        )
+        self.assertEqual(
+            self.probe_calls[0]["password"],
+            FLOW_MODULE.DEFAULT_MQTT_PASSWORD,
+        )
+
+    def test_cancelled_discovery_signals_executor_probe_cleanup(self):
+        self.probe_error = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            self.submit_api()
+        self.assertEqual(len(self.probe_calls), 1)
+        self.assertTrue(self.probe_calls[0]["cancel_event"].is_set())
+
+    def test_api_token_is_stored_and_passed_without_logging(self):
+        with self.assertNoLogs(level=logging.DEBUG):
+            _flow, result = self.complete_discovered()
+        self.assertEqual(
+            result["data"][FLOW_MODULE.CONF_TOKEN], FABRICATED_TOKEN
+        )
+        self.assertEqual(FakeApi.constructor_tokens, [FABRICATED_TOKEN])
+
+    def test_invalid_api_url_is_rejected_before_authentication(self):
+        for value in (" ", "broker.invalid", "ftp://api.invalid"):
+            with self.subTest(value=value):
+                flow, result = self.submit_api(
+                    {FLOW_MODULE.CONF_BASE_URL: value}
                 )
+                self.assertEqual(
+                    result["errors"],
+                    {FLOW_MODULE.CONF_BASE_URL: "invalid_base_url"},
+                )
+                self.assertEqual(flow.created_entries, [])
+        self.assertEqual(FakeApi.health_calls, 0)
 
     def test_blank_host_is_rejected(self):
-        self.assert_field_error(
+        self.assert_advanced_error(
             FLOW_MODULE.CONF_MQTT_HOST,
             " ",
             "invalid_mqtt_host",
@@ -363,7 +601,7 @@ class ConfigFlowMqttTests(unittest.TestCase):
     def test_invalid_ports_are_rejected(self):
         for value in (0, 65536, True, "1883"):
             with self.subTest(value=value):
-                self.assert_field_error(
+                self.assert_advanced_error(
                     FLOW_MODULE.CONF_MQTT_PORT,
                     value,
                     "invalid_mqtt_port",
@@ -372,14 +610,14 @@ class ConfigFlowMqttTests(unittest.TestCase):
     def test_invalid_keepalive_values_are_rejected(self):
         for value in (0, 65536, True, "60"):
             with self.subTest(value=value):
-                self.assert_field_error(
+                self.assert_advanced_error(
                     FLOW_MODULE.CONF_MQTT_KEEPALIVE,
                     value,
                     "invalid_mqtt_keepalive",
                 )
 
     def test_blank_hub_id_is_rejected(self):
-        self.assert_field_error(
+        self.assert_advanced_error(
             FLOW_MODULE.CONF_MQTT_HUB_ID,
             " ",
             "invalid_mqtt_hub_id",
@@ -405,56 +643,51 @@ class ConfigFlowMqttTests(unittest.TestCase):
         )
         for field, value, code in cases:
             with self.subTest(field=field):
-                self.assert_field_error(field, value, code)
+                self.assert_advanced_error(field, value, code)
 
     def test_password_without_username_is_rejected(self):
-        flow, result = self.submit_user(
-            {FLOW_MODULE.CONF_MQTT_USERNAME: " "}
-        )
+        flow, _result = self.manual_flow()
+        values = self.advanced_input()
+        values[FLOW_MODULE.CONF_MQTT_USERNAME] = " "
+        result = _run_immediate(flow.async_step_advanced(values))
         self.assertEqual(
             result["errors"],
-            {FLOW_MODULE.CONF_MQTT_PASSWORD: "mqtt_password_requires_username"},
+            {
+                FLOW_MODULE.CONF_MQTT_PASSWORD:
+                    "mqtt_password_requires_username"
+            },
         )
-        self.assertEqual(flow.created_entries, [])
 
     def test_blank_username_and_password_normalize_to_none(self):
-        flow, result = self.submit_user(
-            {
-                FLOW_MODULE.CONF_MQTT_USERNAME: " ",
-                FLOW_MODULE.CONF_MQTT_PASSWORD: " ",
-            }
-        )
-        self.assertEqual(result["type"], "create_entry")
-        self.assertEqual(len(flow.created_entries), 1)
+        flow, _result = self.manual_flow()
+        values = self.advanced_input()
+        values[FLOW_MODULE.CONF_MQTT_USERNAME] = " "
+        values[FLOW_MODULE.CONF_MQTT_PASSWORD] = " "
+        result = _run_immediate(flow.async_step_advanced(values))
         self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_USERNAME])
         self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD])
 
     def test_tls_verification_is_safely_normalized(self):
-        _flow, result = self.submit_user(
-            {
-                FLOW_MODULE.CONF_MQTT_USE_TLS: False,
-                FLOW_MODULE.CONF_MQTT_VERIFY_TLS: False,
-            }
-        )
+        flow, _result = self.manual_flow()
+        values = self.advanced_input()
+        values[FLOW_MODULE.CONF_MQTT_USE_TLS] = False
+        values[FLOW_MODULE.CONF_MQTT_VERIFY_TLS] = False
+        result = _run_immediate(flow.async_step_advanced(values))
         self.assertFalse(result["data"][FLOW_MODULE.CONF_MQTT_USE_TLS])
         self.assertTrue(result["data"][FLOW_MODULE.CONF_MQTT_VERIFY_TLS])
 
-        _flow, result = self.submit_user(
-            {
-                FLOW_MODULE.CONF_MQTT_USE_TLS: True,
-                FLOW_MODULE.CONF_MQTT_VERIFY_TLS: False,
-            }
-        )
+        flow, _result = self.manual_flow()
+        values[FLOW_MODULE.CONF_MQTT_USE_TLS] = True
+        result = _run_immediate(flow.async_step_advanced(values))
         self.assertTrue(result["data"][FLOW_MODULE.CONF_MQTT_USE_TLS])
         self.assertFalse(result["data"][FLOW_MODULE.CONF_MQTT_VERIFY_TLS])
 
-    def test_api_token_is_stored_and_passed_without_logging(self):
-        with self.assertNoLogs(level=logging.DEBUG):
-            _flow, result = self.submit_user()
-        self.assertEqual(
-            result["data"][FLOW_MODULE.CONF_TOKEN], FABRICATED_TOKEN
-        )
-        self.assertEqual(FakeApi.constructor_tokens, [FABRICATED_TOKEN])
+    def test_unknown_advanced_fields_are_not_stored(self):
+        flow, _result = self.manual_flow()
+        values = self.advanced_input()
+        values["unexpected_field"] = "fabricated-unexpected-value"
+        result = _run_immediate(flow.async_step_advanced(values))
+        self.assertNotIn("unexpected_field", result["data"])
 
     def test_reconfigure_prefills_only_non_secret_fields(self):
         entry = self.existing_entry()
@@ -474,10 +707,7 @@ class ConfigFlowMqttTests(unittest.TestCase):
             fields[FLOW_MODULE.CONF_SCAN_INTERVAL][0].default,
             45,
         )
-        self.assertIs(
-            fields[FLOW_MODULE.CONF_TOKEN][0].default,
-            UNDEFINED,
-        )
+        self.assertIs(fields[FLOW_MODULE.CONF_TOKEN][0].default, UNDEFINED)
         self.assertIs(
             fields[FLOW_MODULE.CONF_MQTT_PASSWORD][0].default,
             UNDEFINED,
@@ -490,9 +720,7 @@ class ConfigFlowMqttTests(unittest.TestCase):
         user_input[FLOW_MODULE.CONF_MQTT_PASSWORD] = ""
         _flow, result = self.reconfigure(entry, user_input)
         self.assertEqual(result["reason"], "reconfigure_successful")
-        self.assertEqual(
-            entry.data[FLOW_MODULE.CONF_TOKEN], FABRICATED_TOKEN
-        )
+        self.assertEqual(entry.data[FLOW_MODULE.CONF_TOKEN], FABRICATED_TOKEN)
         self.assertEqual(
             entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD],
             FABRICATED_PASSWORD,
@@ -512,6 +740,20 @@ class ConfigFlowMqttTests(unittest.TestCase):
             entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD], new_password
         )
 
+    def test_changing_username_without_password_clears_old_password(self):
+        entry = self.existing_entry()
+        user_input = self.reconfigure_input(entry)
+        user_input[FLOW_MODULE.CONF_MQTT_USERNAME] = (
+            "fabricated-replacement-user"
+        )
+        _flow, result = self.reconfigure(entry, user_input)
+        self.assertEqual(result["reason"], "reconfigure_successful")
+        self.assertEqual(
+            entry.data[FLOW_MODULE.CONF_MQTT_USERNAME],
+            "fabricated-replacement-user",
+        )
+        self.assertIsNone(entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD])
+
     def test_clearing_username_also_clears_password(self):
         entry = self.existing_entry()
         user_input = self.reconfigure_input(entry)
@@ -519,12 +761,8 @@ class ConfigFlowMqttTests(unittest.TestCase):
         user_input[FLOW_MODULE.CONF_MQTT_PASSWORD] = " "
         _flow, result = self.reconfigure(entry, user_input)
         self.assertEqual(result["reason"], "reconfigure_successful")
-        self.assertIsNone(
-            entry.data[FLOW_MODULE.CONF_MQTT_USERNAME]
-        )
-        self.assertIsNone(
-            entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD]
-        )
+        self.assertIsNone(entry.data[FLOW_MODULE.CONF_MQTT_USERNAME])
+        self.assertIsNone(entry.data[FLOW_MODULE.CONF_MQTT_PASSWORD])
 
     def test_reconfigure_updates_existing_entry_without_duplicate(self):
         entry = self.existing_entry()
@@ -549,19 +787,9 @@ class ConfigFlowMqttTests(unittest.TestCase):
         result_text = repr(result)
         self.assertNotIn(new_token, result_text)
         self.assertNotIn(new_password, result_text)
+
     def test_rest_only_entry_can_open_reconfigure_form(self):
-        data = self.valid_input()
-        for field in (
-            FLOW_MODULE.CONF_MQTT_HOST,
-            FLOW_MODULE.CONF_MQTT_PORT,
-            FLOW_MODULE.CONF_MQTT_HUB_ID,
-            FLOW_MODULE.CONF_MQTT_USERNAME,
-            FLOW_MODULE.CONF_MQTT_PASSWORD,
-            FLOW_MODULE.CONF_MQTT_USE_TLS,
-            FLOW_MODULE.CONF_MQTT_VERIFY_TLS,
-            FLOW_MODULE.CONF_MQTT_KEEPALIVE,
-        ):
-            data.pop(field, None)
+        data = self.api_input()
         entry = FakeEntry(data)
         flow = FLOW_MODULE.GritHubConfigFlow()
         flow._reconfigure_entry = entry
@@ -573,16 +801,6 @@ class ConfigFlowMqttTests(unittest.TestCase):
             fields[FLOW_MODULE.CONF_MQTT_PORT][0].default,
             FLOW_MODULE.DEFAULT_MQTT_PORT,
         )
-
-    def test_unknown_submission_fields_are_not_stored(self):
-        user_input = self.valid_input()
-        user_input["unexpected_field"] = "fabricated-unexpected-value"
-        flow = FLOW_MODULE.GritHubConfigFlow()
-        result = _run_immediate(flow.async_step_user(user_input))
-        self.assertEqual(result["type"], "create_entry")
-        self.assertNotIn("unexpected_field", result["data"])
-        self.assertEqual(len(flow.created_entries), 1)
-
 
 
 if __name__ == "__main__":

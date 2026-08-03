@@ -31,7 +31,23 @@ class GritHubEntity(CoordinatorEntity):
                 manufacturer="GRIT Automation",
                 model=self.device_type,
             )
-        return DeviceInfo(identifiers={(DOMAIN, "hub")}, name="GRIT Hub", manufacturer="GRIT Automation")
+        hub = self.hub_data
+        name = hub.get("displayName") or hub.get("name") or "GRIT Hub"
+        info: dict[str, Any] = {
+            "identifiers": {(DOMAIN, "hub")},
+            "name": name,
+            "manufacturer": "GRIT Automation",
+            "model": "GRIT Hub",
+        }
+        version = hub.get("hubVersion")
+        if isinstance(version, str):
+            info["sw_version"] = version
+        return DeviceInfo(**info)
+
+    @property
+    def hub_data(self) -> dict[str, Any]:
+        """Return the coordinator's strictly sanitized hub data."""
+        return self.coordinator.hub_data
 
     @property
     def current_device(self) -> dict[str, Any]:

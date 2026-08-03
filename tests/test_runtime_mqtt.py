@@ -350,6 +350,8 @@ class FakeConfigEntries:
         self.hass = hass
         self.forward_calls = 0
         self.unload_calls = 0
+        self.forwarded_platforms: list[list[str]] = []
+        self.unloaded_platforms: list[list[str]] = []
 
     async def async_forward_entry_setups(
         self,
@@ -357,6 +359,7 @@ class FakeConfigEntries:
         _platforms: list[str],
     ) -> None:
         self.forward_calls += 1
+        self.forwarded_platforms.append(list(_platforms))
         self.hass.scenario.events.append("forward_platforms")
         if self.hass.scenario.forward_hook is not None:
             self.hass.scenario.forward_hook()
@@ -372,6 +375,7 @@ class FakeConfigEntries:
         _platforms: list[str],
     ) -> bool:
         self.unload_calls += 1
+        self.unloaded_platforms.append(list(_platforms))
         self.hass.scenario.events.append("unload_platforms")
         if self.hass.scenario.unload_error is not None:
             raise self.hass.scenario.unload_error
@@ -509,6 +513,22 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertTrue(coordinator.mqtt_connected)
+        self.assertEqual(
+            self.hass.config_entries.forwarded_platforms,
+            [list(RUNTIME_MODULE.PLATFORMS)],
+        )
+        self.assertEqual(
+            set(RUNTIME_MODULE.PLATFORMS),
+            {
+                "sensor",
+                "binary_sensor",
+                "switch",
+                "cover",
+                "button",
+                "lock",
+                "number",
+            },
+        )
         self.assertEqual(coordinator.expected_mqtt_hub_id, FABRICATED_MQTT_HUB)
         self.assertEqual(mqtt.host, FABRICATED_MQTT_HOST)
         self.assertEqual(mqtt.port, 8883)
@@ -524,6 +544,52 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn(
             "api", self.hass.data[RUNTIME_MODULE.DOMAIN][entry.entry_id]
+        )
+        await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
+
+    async def test_duplicate_successful_setup_reuses_active_runtime(self) -> None:
+        entry = await self.setup_entry()
+        runtime = entry.runtime_data
+
+        self.assertTrue(
+            await RUNTIME_MODULE.async_setup_entry(self.hass, entry)
+        )
+
+        self.assertIs(entry.runtime_data, runtime)
+        self.assertEqual(len(self.scenario.apis), 1)
+        self.assertEqual(len(self.scenario.coordinators), 1)
+        self.assertEqual(len(self.scenario.mqtt_clients), 1)
+        self.assertEqual(runtime.mqtt.start_calls, 1)
+        self.assertEqual(self.hass.config_entries.forward_calls, 1)
+        await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
+
+    async def test_provisional_defaults_apply_without_stored_overrides(
+        self,
+    ) -> None:
+        data = valid_entry_data()
+        data.pop(RUNTIME_MODULE.CONF_MQTT_USERNAME)
+        data.pop(RUNTIME_MODULE.CONF_MQTT_PASSWORD)
+        original = deepcopy(data)
+
+        entry = await self.setup_entry(data)
+        mqtt = entry.runtime_data.mqtt
+
+        self.assertEqual(
+            mqtt.username,
+            RUNTIME_MODULE.DEFAULT_MQTT_USERNAME,
+        )
+        self.assertEqual(
+            mqtt.password,
+            RUNTIME_MODULE.DEFAULT_MQTT_PASSWORD,
+        )
+        self.assertEqual(entry.data, original)
+        self.assertNotIn(
+            RUNTIME_MODULE.DEFAULT_MQTT_USERNAME,
+            repr(entry.data),
+        )
+        self.assertNotIn(
+            RUNTIME_MODULE.DEFAULT_MQTT_USERNAME,
+            repr(entry.runtime_data.coordinator.__dict__),
         )
         await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
 
@@ -709,8 +775,27 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.scenario.mqtt_clients[0].stop_calls, 1)
         self.assertIsNone(entry.runtime_data)
         self.assertNotIn(entry.entry_id, self.hass.data.get("grit_hub", {}))
+        self.assertEqual(self.hass.config_entries.unload_calls, 1)
+        self.assertEqual(
+            self.hass.config_entries.unloaded_platforms,
+            [list(RUNTIME_MODULE.PLATFORMS)],
+        )
         self.hass.loop.flush()
         self.assertEqual(coordinator.messages, [])
+
+    async def test_cancelled_platform_rollback_still_stops_runtime(self) -> None:
+        self.scenario.forward_error = RuntimeError(
+            "fabricated forward failure"
+        )
+        self.scenario.unload_error = asyncio.CancelledError()
+        entry = FakeEntry(valid_entry_data())
+
+        with self.assertRaises(asyncio.CancelledError):
+            await RUNTIME_MODULE.async_setup_entry(self.hass, entry)
+
+        self.assertEqual(self.scenario.mqtt_clients[0].stop_calls, 1)
+        self.assertIsNone(entry.runtime_data)
+        self.assertNotIn(entry.entry_id, self.hass.data.get("grit_hub", {}))
 
     async def test_successful_unload_stops_off_loop_after_platforms(self) -> None:
         entry = await self.setup_entry()
@@ -723,6 +808,10 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
             self.scenario.events.index("mqtt_stop"),
         )
         self.assertEqual(runtime.mqtt.stop_calls, 1)
+        self.assertEqual(
+            self.hass.config_entries.unloaded_platforms,
+            [list(RUNTIME_MODULE.PLATFORMS)],
+        )
         self.assertNotEqual(
             runtime.mqtt.stop_thread_ids[0], self.scenario.main_thread_id
         )
@@ -731,6 +820,40 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime.unloading)
         self.assertIsNone(entry.runtime_data)
         self.assertNotIn(entry.entry_id, self.hass.data["grit_hub"])
+
+    async def test_unload_then_reload_creates_one_replacement_runtime(self) -> None:
+        entry = await self.setup_entry()
+        original_runtime = entry.runtime_data
+        self.assertTrue(
+            await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
+        )
+
+        self.assertTrue(
+            await RUNTIME_MODULE.async_setup_entry(self.hass, entry)
+        )
+        replacement_runtime = entry.runtime_data
+        self.assertIsNot(replacement_runtime, original_runtime)
+        self.assertEqual(len(self.scenario.mqtt_clients), 2)
+        self.assertEqual(self.hass.config_entries.forward_calls, 2)
+        self.assertEqual(self.hass.config_entries.unload_calls, 1)
+        await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
+
+    async def test_failed_setup_can_retry_same_entry_cleanly(self) -> None:
+        self.scenario.start_result = False
+        self.scenario.start_state = None
+        entry = FakeEntry(valid_entry_data())
+        with self.assertRaises(ConfigEntryNotReady):
+            await RUNTIME_MODULE.async_setup_entry(self.hass, entry)
+
+        self.scenario.start_result = True
+        self.scenario.start_state = True
+        self.assertTrue(
+            await RUNTIME_MODULE.async_setup_entry(self.hass, entry)
+        )
+        self.assertEqual(len(self.scenario.mqtt_clients), 2)
+        self.assertTrue(self.scenario.mqtt_clients[0].stopped)
+        self.assertTrue(entry.runtime_data.active)
+        await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
 
     async def test_failed_platform_unload_leaves_runtime_active(self) -> None:
         entry = await self.setup_entry()
@@ -808,6 +931,11 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.scenario.mqtt_clients[0].stop_calls, 1)
         self.assertIsNone(entry.runtime_data)
         self.assertNotIn(entry.entry_id, self.hass.data.get("grit_hub", {}))
+        self.assertEqual(self.hass.config_entries.unload_calls, 1)
+        self.assertEqual(
+            self.hass.config_entries.unloaded_platforms,
+            [list(RUNTIME_MODULE.PLATFORMS)],
+        )
 
     async def test_setup_cancellation_cleans_up_and_propagates(self) -> None:
         self.scenario.start_state = None

@@ -8,6 +8,9 @@ from urllib.parse import quote
 import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .const import REST_DISCOVERY_TIMEOUT
+from .hub import normalize_hub_id, sanitize_hub_data
+
 
 class GritHubApiError(Exception):
     """Raised when the GRIT Hub API returns an error."""
@@ -78,11 +81,63 @@ class GritHubApiClient:
         except GritHubApiError:
             return await self.request("GET", "/", timeout=10)
 
-    async def get_hub(self) -> Any:
-        try:
-            return await self.request("GET", "/api/hub/1")
-        except GritHubApiError:
-            return None
+    async def get_hub(self) -> dict[str, Any] | None:
+        """Read the documented current-hub response and sanitize it."""
+        data = await self.request(
+            "GET",
+            "/api/hub/1",
+            timeout=REST_DISCOVERY_TIMEOUT,
+        )
+        return sanitize_hub_data(data)
+
+    async def set_gritlock(self, locked: bool) -> Any:
+        """Set system-wide GRITLock through the bounded lockout route."""
+        if not isinstance(locked, bool):
+            raise GritHubApiError("GRITLock state is invalid")
+        return await self.request(
+            "PUT",
+            "/api/hub/lockout",
+            json={"state": locked},
+            timeout=REST_DISCOVERY_TIMEOUT,
+        )
+
+    async def set_system_led_brightness(
+        self,
+        hub_id: str,
+        brightness: int,
+    ) -> Any:
+        """Update only the documented system LED brightness setting."""
+        normalized_hub_id = normalize_hub_id(hub_id)
+        if normalized_hub_id is None:
+            raise GritHubApiError("Hub identifier is invalid")
+        if (
+            isinstance(brightness, bool)
+            or not isinstance(brightness, int)
+            or not 0 <= brightness <= 100
+        ):
+            raise GritHubApiError("System LED brightness is invalid")
+        return await self.request(
+            "PUT",
+            f"/api/hub/{quote(normalized_hub_id)}/settings",
+            json={"systemLedBrightness": brightness},
+            timeout=REST_DISCOVERY_TIMEOUT,
+        )
+
+    async def restart_service(self) -> Any:
+        """Restart the GRIT service without accepting arbitrary input."""
+        return await self.request(
+            "PUT",
+            "/api/hub/restart",
+            timeout=REST_DISCOVERY_TIMEOUT,
+        )
+
+    async def reboot_hub(self) -> Any:
+        """Reboot the hub without accepting arbitrary input."""
+        return await self.request(
+            "PUT",
+            "/api/hub/reboot",
+            timeout=REST_DISCOVERY_TIMEOUT,
+        )
 
     async def get_collection(self, device_type: str) -> list[dict[str, Any]]:
         data = await self.request("GET", f"/api/{quote(device_type)}")

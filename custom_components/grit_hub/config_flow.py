@@ -1,7 +1,11 @@
 """Config flow for GRIT Hub."""
 from __future__ import annotations
 
+import asyncio
+from functools import partial
+import threading
 from typing import Any
+from urllib.parse import urlsplit
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -23,16 +27,24 @@ from .const import (
     CONF_TOKEN,
     CONF_VERIFY_SSL,
     DEFAULT_MQTT_KEEPALIVE,
+    DEFAULT_MQTT_PASSWORD,
     DEFAULT_MQTT_PORT,
+    DEFAULT_MQTT_USERNAME,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_MQTT_HOST_LENGTH,
     MAX_MQTT_HUB_ID_LENGTH,
     MAX_MQTT_USERNAME_LENGTH,
+    MQTT_DISCOVERY_TIMEOUT,
+)
+from .discovery import (
+    extract_rest_mqtt_discovery,
+    passive_mqtt_discover,
 )
 
 _MAX_BASE_URL_LENGTH = 2048
 _MAX_SECRET_LENGTH = 4096
+_CONF_SHOW_ADVANCED = "show_advanced"
 _PASSWORD_SELECTOR = selector.TextSelector(
     selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
 )
@@ -142,25 +154,46 @@ def _password(data: dict[str, Any]) -> str | None:
     return value if value.strip() else None
 
 
+def _normalize_api_config(
+    data: dict[str, Any],
+    *,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate the small initial REST form without MQTT assumptions."""
+    base_url = _text(
+        data, CONF_BASE_URL, _MAX_BASE_URL_LENGTH, "invalid_base_url"
+    ).rstrip("/")
+    try:
+        parsed = urlsplit(base_url)
+        hostname = parsed.hostname
+    except ValueError as err:
+        raise _InputError(CONF_BASE_URL, "invalid_base_url") from err
+    if (
+        not base_url
+        or parsed.scheme not in {"http", "https"}
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise _InputError(CONF_BASE_URL, "invalid_base_url")
+    return {
+        CONF_BASE_URL: base_url,
+        CONF_TOKEN: _secret(data, CONF_TOKEN, "invalid_token", existing),
+        CONF_VERIFY_SSL: _boolean(
+            data, CONF_VERIFY_SSL, True, "invalid_verify_ssl"
+        ),
+    }
+
+
 def _normalize_config(
     data: dict[str, Any],
     *,
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate and normalize setup or reconfigure input locally."""
-    normalized: dict[str, Any] = {}
-    base_url = _text(
-        data, CONF_BASE_URL, _MAX_BASE_URL_LENGTH, "invalid_base_url"
-    ).rstrip("/")
-    if not base_url:
-        raise _InputError(CONF_BASE_URL, "invalid_base_url")
-    normalized[CONF_BASE_URL] = base_url
-    normalized[CONF_TOKEN] = _secret(
-        data, CONF_TOKEN, "invalid_token", existing
-    )
-    normalized[CONF_VERIFY_SSL] = _boolean(
-        data, CONF_VERIFY_SSL, True, "invalid_verify_ssl"
-    )
+    """Validate and normalize the complete stored configuration."""
+    normalized = _normalize_api_config(data, existing=existing)
     normalized[CONF_SCAN_INTERVAL] = _integer(
         data,
         CONF_SCAN_INTERVAL,
@@ -202,8 +235,9 @@ def _normalize_config(
         raise _InputError(CONF_MQTT_HUB_ID, "invalid_mqtt_hub_id")
     normalized[CONF_MQTT_HUB_ID] = mqtt_hub_id
 
+    stored_username = _username(existing) if existing is not None else None
     if existing is not None and CONF_MQTT_USERNAME not in data:
-        username = _username(existing)
+        username = stored_username
     else:
         username = _username(data)
     supplied_password = _password(data)
@@ -215,7 +249,7 @@ def _normalize_config(
         password = None
     elif supplied_password is not None:
         password = supplied_password
-    elif existing is not None:
+    elif existing is not None and username == stored_username:
         stored = existing.get(CONF_MQTT_PASSWORD)
         password = stored if isinstance(stored, str) else None
     else:
@@ -230,7 +264,6 @@ def _normalize_config(
         data, CONF_MQTT_VERIFY_TLS, True, "invalid_mqtt_tls"
     )
     normalized[CONF_MQTT_USE_TLS] = use_tls
-    # Verification is inert without TLS; retain its safe future default.
     normalized[CONF_MQTT_VERIFY_TLS] = verify_tls if use_tls else True
     normalized[CONF_MQTT_KEEPALIVE] = _integer(
         data,
@@ -243,11 +276,11 @@ def _normalize_config(
     return normalized
 
 
-def _config_schema(
+def _api_schema(
     defaults: dict[str, Any] | None = None,
     *,
     reconfigure: bool = False,
-) -> vol.Schema:
+) -> dict[Any, Any]:
     defaults = defaults or {}
     base_url = (
         vol.Required(CONF_BASE_URL, default=defaults[CONF_BASE_URL])
@@ -259,68 +292,134 @@ def _config_schema(
         if reconfigure
         else vol.Required(CONF_TOKEN)
     )
-    mqtt_host = (
+    return {
+        base_url: str,
+        token: _PASSWORD_SELECTOR,
         vol.Required(
-            CONF_MQTT_HOST, default=defaults.get(CONF_MQTT_HOST, "")
-        )
-        if reconfigure
-        else vol.Required(CONF_MQTT_HOST)
-    )
-    mqtt_hub_id = (
+            CONF_VERIFY_SSL,
+            default=defaults.get(CONF_VERIFY_SSL, True),
+        ): bool,
+    }
+
+
+def _advanced_schema_fields(
+    defaults: dict[str, Any] | None = None,
+) -> dict[Any, Any]:
+    defaults = defaults or {}
+    return {
+        vol.Required(
+            CONF_SCAN_INTERVAL,
+            default=defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+        ): int,
+        vol.Required(
+            CONF_MQTT_HOST,
+            default=defaults.get(CONF_MQTT_HOST, ""),
+        ): str,
+        vol.Required(
+            CONF_MQTT_PORT,
+            default=defaults.get(CONF_MQTT_PORT, DEFAULT_MQTT_PORT),
+        ): int,
         vol.Required(
             CONF_MQTT_HUB_ID,
             default=defaults.get(CONF_MQTT_HUB_ID, ""),
-        )
-        if reconfigure
-        else vol.Required(CONF_MQTT_HUB_ID)
-    )
-    return vol.Schema(
-        {
-            base_url: str,
-            token: _PASSWORD_SELECTOR,
-            vol.Required(
-                CONF_VERIFY_SSL,
-                default=defaults.get(CONF_VERIFY_SSL, True),
-            ): bool,
-            vol.Required(
-                CONF_SCAN_INTERVAL,
-                default=defaults.get(
-                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                ),
-            ): int,
-            mqtt_host: str,
-            vol.Required(
-                CONF_MQTT_PORT,
-                default=defaults.get(CONF_MQTT_PORT, DEFAULT_MQTT_PORT),
-            ): int,
-            mqtt_hub_id: str,
-            vol.Optional(
-                CONF_MQTT_USERNAME,
-                default=defaults.get(CONF_MQTT_USERNAME) or "",
-            ): str,
-            vol.Optional(CONF_MQTT_PASSWORD): _PASSWORD_SELECTOR,
-            vol.Optional(
-                CONF_MQTT_USE_TLS,
-                default=defaults.get(CONF_MQTT_USE_TLS, False),
-            ): bool,
-            vol.Optional(
-                CONF_MQTT_VERIFY_TLS,
-                default=defaults.get(CONF_MQTT_VERIFY_TLS, True),
-            ): bool,
-            vol.Optional(
-                CONF_MQTT_KEEPALIVE,
-                default=defaults.get(
-                    CONF_MQTT_KEEPALIVE, DEFAULT_MQTT_KEEPALIVE
-                ),
-            ): int,
-        }
-    )
+        ): str,
+        vol.Optional(
+            CONF_MQTT_USERNAME,
+            default=defaults.get(CONF_MQTT_USERNAME) or "",
+        ): str,
+        vol.Optional(CONF_MQTT_PASSWORD): _PASSWORD_SELECTOR,
+        vol.Optional(
+            CONF_MQTT_USE_TLS,
+            default=defaults.get(CONF_MQTT_USE_TLS, False),
+        ): bool,
+        vol.Optional(
+            CONF_MQTT_VERIFY_TLS,
+            default=defaults.get(CONF_MQTT_VERIFY_TLS, True),
+        ): bool,
+        vol.Optional(
+            CONF_MQTT_KEEPALIVE,
+            default=defaults.get(
+                CONF_MQTT_KEEPALIVE, DEFAULT_MQTT_KEEPALIVE
+            ),
+        ): int,
+    }
+
+
+def _config_schema(
+    defaults: dict[str, Any] | None = None,
+    *,
+    reconfigure: bool = False,
+) -> vol.Schema:
+    fields = _api_schema(defaults, reconfigure=reconfigure)
+    fields.update(_advanced_schema_fields(defaults))
+    return vol.Schema(fields)
 
 
 class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Configure GRIT REST and MQTT connection settings."""
+    """Configure GRIT REST and discover bounded MQTT settings."""
 
     VERSION = 1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._pending_api: dict[str, Any] | None = None
+        self._advanced_defaults: dict[str, Any] = {}
+
+    async def _async_discover_installation(
+        self,
+        api_config: dict[str, Any],
+        api: GritHubApiClient,
+    ):
+        try:
+            hub = await api.get_hub()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            hub = None
+        rest = extract_rest_mqtt_discovery([hub])
+
+        defaults: dict[str, Any] = {
+            CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+            CONF_MQTT_HOST: rest.host or "",
+            CONF_MQTT_PORT: DEFAULT_MQTT_PORT,
+            CONF_MQTT_HUB_ID: rest.hub_id or "",
+            CONF_MQTT_USERNAME: None,
+            CONF_MQTT_PASSWORD: None,
+            CONF_MQTT_USE_TLS: False,
+            CONF_MQTT_VERIFY_TLS: True,
+            CONF_MQTT_KEEPALIVE: DEFAULT_MQTT_KEEPALIVE,
+        }
+
+        probe = None
+        if rest.host is not None and rest.hub_id is not None:
+            cancel_event = threading.Event()
+            try:
+                probe = await self.hass.async_add_executor_job(
+                    partial(
+                        passive_mqtt_discover,
+                        rest.host,
+                        DEFAULT_MQTT_PORT,
+                        timeout=MQTT_DISCOVERY_TIMEOUT,
+                        expected_hub_id=rest.hub_id,
+                        username=DEFAULT_MQTT_USERNAME,
+                        password=DEFAULT_MQTT_PASSWORD,
+                        use_tls=False,
+                        verify_tls=True,
+                        keepalive=DEFAULT_MQTT_KEEPALIVE,
+                        cancel_event=cancel_event,
+                    )
+                )
+            except asyncio.CancelledError:
+                cancel_event.set()
+                raise
+            except Exception:
+                probe = None
+
+        self._pending_api = api_config
+        self._advanced_defaults = defaults
+        if probe is not None and probe.connected:
+            return await self.async_step_confirm()
+        return await self.async_step_advanced()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -328,7 +427,7 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                normalized = _normalize_config(user_input)
+                normalized = _normalize_api_config(user_input)
             except _InputError as err:
                 errors[err.field] = err.code
             else:
@@ -345,13 +444,63 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except GritHubApiError:
                     errors["base"] = "cannot_connect"
                 else:
-                    return self.async_create_entry(
-                        title="GRIT Hub", data=normalized
+                    return await self._async_discover_installation(
+                        normalized,
+                        api,
                     )
 
         return self.async_show_form(
             step_id="user",
-            data_schema=_config_schema(),
+            data_schema=vol.Schema(_api_schema()),
+            errors=errors,
+        )
+
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        if self._pending_api is None:
+            return await self.async_step_user()
+        if user_input is not None:
+            if user_input.get(_CONF_SHOW_ADVANCED) is True:
+                return await self.async_step_advanced()
+            combined = {**self._pending_api, **self._advanced_defaults}
+            normalized = _normalize_config(combined)
+            return self.async_create_entry(title="GRIT Hub", data=normalized)
+
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema(
+                {vol.Optional(_CONF_SHOW_ADVANCED, default=False): bool}
+            ),
+            description_placeholders={
+                "mqtt_host": self._advanced_defaults[CONF_MQTT_HOST],
+                "mqtt_hub_id": self._advanced_defaults[CONF_MQTT_HUB_ID],
+            },
+        )
+
+    async def async_step_advanced(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        if self._pending_api is None:
+            return await self.async_step_user()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                normalized = _normalize_config(
+                    {**self._pending_api, **user_input}
+                )
+            except _InputError as err:
+                errors[err.field] = err.code
+            else:
+                return self.async_create_entry(
+                    title="GRIT Hub",
+                    data=normalized,
+                )
+        return self.async_show_form(
+            step_id="advanced",
+            data_schema=vol.Schema(
+                _advanced_schema_fields(self._advanced_defaults)
+            ),
             errors=errors,
         )
 

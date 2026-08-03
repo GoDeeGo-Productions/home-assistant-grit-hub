@@ -3,11 +3,24 @@
     "step": {
       "user": {
         "title": "Connect to GRIT Hub",
-        "description": "Enter the GRIT API and MQTT broker connection settings.",
+        "description": "Enter the GRIT API settings. After authentication, the integration will attempt bounded, passive MQTT discovery.",
         "data": {
           "base_url": "GRIT API base URL",
           "token": "GRIT API bearer token",
-          "verify_ssl": "Verify GRIT API SSL certificate",
+          "verify_ssl": "Verify GRIT API SSL certificate"
+        }
+      },
+      "confirm": {
+        "title": "Confirm MQTT discovery",
+        "description": "Authentication succeeded. The MQTT broker {mqtt_host} and topic hub ID {mqtt_hub_id} were discovered. Continue to use these values, or review the advanced settings.",
+        "data": {
+          "show_advanced": "Review advanced settings"
+        }
+      },
+      "advanced": {
+        "title": "Advanced MQTT settings",
+        "description": "Automatic discovery could not validate all required MQTT settings, or advanced review was requested. Enter overrides as needed; leaving both MQTT credential fields blank uses the provisional vendor-default read-only credentials.",
+        "data": {
           "scan_interval": "REST scan interval (seconds)",
           "mqtt_host": "MQTT broker hostname",
           "mqtt_port": "MQTT broker port",
@@ -21,8 +34,8 @@
         "data_description": {
           "mqtt_host": "Hostname or address of an existing MQTT broker.",
           "mqtt_hub_id": "Hub identifier used in GRIT MQTT topics.",
-          "mqtt_username": "Optional broker username.",
-          "mqtt_password": "Optional broker password; a username is required.",
+          "mqtt_username": "Leave both credential fields blank to use the provisional read-only defaults, or enter an override username.",
+          "mqtt_password": "Leave both credential fields blank to use the provisional read-only defaults; an override password requires an override username.",
           "mqtt_use_tls": "Enable encryption for the MQTT connection.",
           "mqtt_verify_tls": "Verify the broker certificate when TLS is enabled."
         }

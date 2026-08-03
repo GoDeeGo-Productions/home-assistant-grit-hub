@@ -12,7 +12,11 @@ from .entity import GritHubEntity
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    entities = [GritHubRefreshAllButton(coordinator)]
+    entities = [
+        GritHubRefreshAllButton(coordinator),
+        GritHubRestartServiceButton(coordinator),
+        GritHubRebootHubButton(coordinator),
+    ]
     for dev_type in DEVICE_TYPES:
         for dev in coordinator.data.get("devices", {}).get(dev_type, []):
             if obj_id(dev) is not None:
@@ -29,6 +33,35 @@ class GritHubRefreshAllButton(GritHubEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.async_request_refresh()
+
+
+class GritHubRestartServiceButton(GritHubEntity, ButtonEntity):
+    _attr_name = "Restart GRIT Service"
+    _attr_unique_id = "grit_hub_restart_service"
+    _attr_icon = "mdi:restart"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    async def async_press(self) -> None:
+        try:
+            await self.coordinator.api.restart_service()
+        except GritHubApiError as err:
+            raise HomeAssistantError(
+                "GRIT service restart failed"
+            ) from err
+
+
+class GritHubRebootHubButton(GritHubEntity, ButtonEntity):
+    _attr_name = "Reboot Hub"
+    _attr_unique_id = "grit_hub_reboot"
+    _attr_icon = "mdi:power-cycle"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_entity_registry_enabled_default = False
+
+    async def async_press(self) -> None:
+        try:
+            await self.coordinator.api.reboot_hub()
+        except GritHubApiError as err:
+            raise HomeAssistantError("GRIT Hub reboot failed") from err
 
 
 class GritHubRefreshDeviceButton(GritHubEntity, ButtonEntity):

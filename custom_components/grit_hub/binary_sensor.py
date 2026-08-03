@@ -13,6 +13,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     entities = [
         GritHubOnlineBinarySensor(coordinator),
+        GritHubInternetConnectivityBinarySensor(coordinator),
+        GritHubPhysicalButtonsDisabledBinarySensor(coordinator),
         GritHubMqttConnectionBinarySensor(coordinator, entry.entry_id),
     ]
     for dev_type in DEVICE_TYPES:
@@ -38,6 +40,36 @@ class GritHubOnlineBinarySensor(GritHubEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         return self.coordinator.last_update_success
+
+
+class GritHubInternetConnectivityBinarySensor(
+    GritHubEntity,
+    BinarySensorEntity,
+):
+    _attr_name = "Internet Connectivity"
+    _attr_unique_id = "grit_hub_internet_connected"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def is_on(self) -> bool | None:
+        value = self.hub_data.get("connectedToInternet")
+        return value if isinstance(value, bool) else None
+
+
+class GritHubPhysicalButtonsDisabledBinarySensor(
+    GritHubEntity,
+    BinarySensorEntity,
+):
+    _attr_name = "Physical Hub Buttons Disabled"
+    _attr_unique_id = "grit_hub_physical_buttons_disabled"
+    _attr_icon = "mdi:gesture-tap-button"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def is_on(self) -> bool | None:
+        value = self.hub_data.get("disableHubButtons")
+        return value if isinstance(value, bool) else None
 
 
 class GritHubMqttConnectionBinarySensor(GritHubEntity, BinarySensorEntity):

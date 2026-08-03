@@ -11,6 +11,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import GritHubApiClient, GritHubApiError
 from .const import DEVICE_TYPES, DOMAIN, SWITCH_DEVICE_TYPES
+from .hub import derive_gritlock_state
 
 _LOGGER = logging.getLogger(__name__)
 MQTT_STATE_KEY = "_grit_mqtt"
@@ -356,6 +357,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.api = api
         self._mqtt_connected = False
+        self._refresh_sequence = 0
+        self._hub_update_sequence = 0
+        self._gritlock_update_sequence = 0
         self._expected_mqtt_hub_id = (
             None
             if expected_mqtt_hub_id is None
@@ -372,6 +376,47 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return whether MQTT is connected and subscribed."""
         return self._mqtt_connected
 
+    @property
+    def hub_data(self) -> dict[str, Any]:
+        """Return only the API client's sanitized hub allowlist."""
+        if not isinstance(self.data, dict):
+            return {}
+        hub = self.data.get("hub")
+        return hub if isinstance(hub, dict) else {}
+
+    @property
+    def hub_id(self) -> str | None:
+        """Return the stable documented hub identifier when available."""
+        value = self.hub_data.get("id")
+        if isinstance(value, str):
+            return value
+        return self._expected_mqtt_hub_id
+
+    @property
+    def gritlock_state(self) -> bool | None:
+        """Return unanimous system-wide state from participating triggers."""
+        devices = (
+            self.data.get("devices")
+            if isinstance(self.data, dict)
+            else None
+        )
+        return derive_gritlock_state(devices)
+
+    @property
+    def refresh_sequence(self) -> int:
+        """Return the most recently started REST refresh generation."""
+        return self._refresh_sequence
+
+    @property
+    def hub_update_sequence(self) -> int:
+        """Return the last generation with a valid current-hub response."""
+        return self._hub_update_sequence
+
+    @property
+    def gritlock_update_sequence(self) -> int:
+        """Return the last generation with a successful trigger read."""
+        return self._gritlock_update_sequence
+
     def set_mqtt_connected(self, connected: bool) -> bool:
         """Update broker state on the event loop and notify once per change."""
         if not isinstance(connected, bool):
@@ -383,12 +428,16 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return True
 
     async def _async_update_data(self) -> dict[str, Any]:
-        previous_devices = (
-            self.data.get("devices", {}) if isinstance(self.data, dict) else {}
-        )
+        self._refresh_sequence += 1
+        refresh_sequence = self._refresh_sequence
+        hub_refreshed = False
+        triggers_refreshed = False
+        previous_data = self.data if isinstance(self.data, dict) else {}
+        previous_devices = previous_data.get("devices", {})
+        previous_hub = previous_data.get("hub")
         data: dict[str, Any] = {
             "devices": {},
-            "hub": None,
+            "hub": previous_hub if isinstance(previous_hub, dict) else None,
             "health": None,
             "errors": {},
         }
@@ -398,18 +447,29 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(str(err)) from err
 
         try:
-            data["hub"] = await self.api.get_hub()
+            refreshed_hub = await self.api.get_hub()
+            if isinstance(refreshed_hub, dict) and refreshed_hub:
+                data["hub"] = refreshed_hub
+                hub_refreshed = True
         except GritHubApiError as err:
             data["errors"]["hub"] = str(err)
 
         for dev_type in DEVICE_TYPES:
             try:
-                data["devices"][dev_type] = await self.api.get_collection(dev_type)
+                data["devices"][dev_type] = await self.api.get_collection(
+                    dev_type
+                )
+                if dev_type == "trigger":
+                    triggers_refreshed = True
             except GritHubApiError as err:
                 data["devices"][dev_type] = []
                 data["errors"][dev_type] = str(err)
 
         _preserve_mqtt_state(previous_devices, data["devices"])
+        if hub_refreshed:
+            self._hub_update_sequence = refresh_sequence
+        if triggers_refreshed:
+            self._gritlock_update_sequence = refresh_sequence
         return data
 
     def handle_mqtt_message(
