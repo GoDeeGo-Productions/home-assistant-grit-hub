@@ -200,7 +200,11 @@ def _apply_mqtt_message(
     payload: dict[str, Any],
 ) -> None:
     """Apply a scheduled MQTT message only while this runtime is active."""
-    if not runtime.active or runtime.unloading:
+    if (
+        not runtime.active
+        or runtime.unloading
+        or not runtime.coordinator.mqtt_connected
+    ):
         return
     runtime.coordinator.handle_mqtt_message(
         hub_id,
@@ -218,7 +222,9 @@ def _apply_mqtt_connection_state(
     """Apply a scheduled broker state and complete initial readiness."""
     if not runtime.active or runtime.unloading:
         return
-    runtime.coordinator.set_mqtt_connected(connected)
+    changed = runtime.coordinator.set_mqtt_connected(connected)
+    if connected and changed:
+        runtime.coordinator.start_state_reconciliation()
     ready_future = runtime.ready_future
     if ready_future is not None and not ready_future.done():
         ready_future.set_result(connected)
@@ -264,12 +270,15 @@ async def _stop_runtime(
         ready_future.cancel()
 
     try:
-        if not runtime.mqtt_stopped:
-            runtime.mqtt_stopped = True
-            await hass.async_add_executor_job(runtime.mqtt.stop)
+        await runtime.coordinator.async_stop_state_reconciliation()
     finally:
-        _remove_compatibility_storage(hass, entry, runtime)
-        _clear_runtime_data(entry, runtime)
+        try:
+            if not runtime.mqtt_stopped:
+                runtime.mqtt_stopped = True
+                await hass.async_add_executor_job(runtime.mqtt.stop)
+        finally:
+            _remove_compatibility_storage(hass, entry, runtime)
+            _clear_runtime_data(entry, runtime)
 
 
 async def _unload_partial_platforms(

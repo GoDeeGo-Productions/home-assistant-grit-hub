@@ -149,6 +149,67 @@ class ApiHubTests(unittest.TestCase):
         result = asyncio.run(client.get_hub())
         self.assertEqual(result, {})
 
+    def test_targeted_telemetry_refresh_uses_documented_bounded_endpoint(self):
+        client = self.client()
+        calls = []
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return {"success": True, "message": "fabricated success"}
+
+        client.request = request
+        asyncio.run(client.request_device_telemetry("gate", "gate/id"))
+        asyncio.run(client.request_device_telemetry("rfid", "42"))
+
+        timeout = API.REST_DISCOVERY_TIMEOUT
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "POST",
+                    "/api/device/mesh-telemetry/refresh/gate/gate%2Fid",
+                    {"timeout": timeout},
+                ),
+                (
+                    "POST",
+                    "/api/device/mesh-telemetry/refresh/rfid/42",
+                    {"timeout": timeout},
+                ),
+            ],
+        )
+
+    def test_targeted_telemetry_refresh_fails_closed(self):
+        client = self.client()
+        client.request = mock.AsyncMock(
+            return_value={"success": False, "message": "fabricated failure"}
+        )
+        with self.assertRaises(API.GritHubApiError) as captured:
+            asyncio.run(client.request_device_telemetry("gate", "gate-1"))
+        self.assertEqual(
+            str(captured.exception),
+            "Telemetry refresh request failed",
+        )
+        self.assertNotIn("fabricated failure", str(captured.exception))
+
+        client.request.reset_mock()
+        invalid = (
+            ("solenoid", "device-1"),
+            ("gate", ""),
+            ("gate", "."),
+            ("gate", ".."),
+            ("rfid", True),
+            ("rfid", 42),
+            ("rfid", "line\nbreak"),
+            ("gate", "x" * 129),
+        )
+        for device_type, device_id in invalid:
+            with self.subTest(device_type=device_type, device_id=type(device_id)):
+                with self.assertRaises(API.GritHubApiError):
+                    asyncio.run(
+                        client.request_device_telemetry(device_type, device_id)
+                    )
+        client.request.assert_not_awaited()
+
     def test_explicit_hub_commands_use_documented_paths_and_bodies(self):
         client = self.client()
         calls = []

@@ -1,11 +1,17 @@
 """Switches for GRIT Hub controllable devices."""
 from __future__ import annotations
 
+import asyncio
+
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.exceptions import HomeAssistantError
 
 from .api import GritHubApiError, bool_state, obj_id, obj_name
-from .const import DOMAIN, SWITCH_DEVICE_TYPES
+from .const import (
+    DEVICE_CONFIRM_TIMEOUT,
+    DOMAIN,
+    SWITCH_DEVICE_TYPES,
+)
 from .entity import GritHubEntity
 
 
@@ -44,15 +50,43 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
         return self.diagnostic_attributes
 
     async def async_turn_on(self, **kwargs):
-        try:
-            await self.coordinator.api.set_device_state(self.device_type, self._device_id, True)
-            await self.coordinator.async_request_refresh()
-        except GritHubApiError as err:
-            raise HomeAssistantError(str(err)) from err
+        await self._async_set_state(True)
 
     async def async_turn_off(self, **kwargs):
+        await self._async_set_state(False)
+
+    def _observed_state(self) -> bool | None:
+        observed = self.current_device_observation
+        if observed is None:
+            return None
+        rest_state = bool_state(observed)
+        if self.device_type != "rfid":
+            return rest_state
+        mqtt_state = self.mqtt_state
+        if "state" in mqtt_state:
+            state = mqtt_state["state"]
+            return state if isinstance(state, bool) else None
+        return rest_state
+
+    async def _async_set_state(self, state: bool) -> None:
         try:
-            await self.coordinator.api.set_device_state(self.device_type, self._device_id, False)
-            await self.coordinator.async_request_refresh()
-        except GritHubApiError as err:
-            raise HomeAssistantError(str(err)) from err
+            await self.coordinator.api.set_device_state(
+                self.device_type,
+                self._device_id,
+                state,
+            )
+            confirmation_generation = self.coordinator.refresh_sequence
+            await asyncio.wait_for(
+                self.coordinator.async_request_refresh(),
+                timeout=DEVICE_CONFIRM_TIMEOUT,
+            )
+        except (GritHubApiError, asyncio.TimeoutError) as err:
+            raise HomeAssistantError(
+                "Device state could not be confirmed"
+            ) from err
+        if (
+            not self.coordinator.last_update_success
+            or self.coordinator.refresh_sequence <= confirmation_generation
+            or self._observed_state() is not state
+        ):
+            raise HomeAssistantError("Device state could not be confirmed")

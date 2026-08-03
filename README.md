@@ -185,9 +185,11 @@ The integration creates a single GRIT Hub device with:
 - a Hub reboot button that is disabled by default.
 
 Discovered equipment retains the existing per-device diagnostics, switches,
-covers, refresh buttons and locate buttons. MQTT remains subscribe-only; all
-commands use explicit REST methods. A GRITLock or LED request is not reported as
-confirmed merely because its HTTP request completed.
+covers, refresh buttons and locate buttons. Gate and switch commands require a
+bounded refreshed observation matching the requested state before they are
+reported as confirmed. MQTT remains subscribe-only; all commands use explicit
+REST methods. A GRITLock or LED request is not reported as confirmed merely
+because its HTTP request completed.
 
 The bounded `grit_hub.device_command`, `grit_hub.refresh_device` and
 `grit_hub.locate_device` services also remain. Services, buttons, locks, covers
@@ -198,22 +200,40 @@ button, raw MQTT control, backup/restore control, SSH control or tunnel control.
 ## State, availability and reconciliation
 
 REST polling remains the authoritative discovery and reconciliation mechanism.
-Validated MQTT messages can update known devices immediately, and the
-coordinator preserves only bounded MQTT state across an unambiguous same-device
-REST refresh.
+Validated MQTT messages can update known devices immediately. At each REST
+refresh boundary, an older gate or RFID live value cannot mask the refreshed
+REST value, while a validated MQTT update received during that refresh is
+preserved. Once a source sequence or timestamp has established ordering for a
+state category, an update without comparable ordering metadata is rejected.
+When neither REST nor MQTT has supplied a validated current value, the entity
+reports unknown instead of inferring a state.
+
+After the first successful MQTT subscription and each reconnect, the coordinator
+makes bounded targeted requests for uniquely identified gates and RFID readers
+through the documented
+`POST /api/device/mesh-telemetry/refresh/{type}/{id}` endpoint. Each request uses
+the existing five-second REST timeout, at most four run concurrently, and the
+whole pass has fixed target, duration and repeat limits. Normal REST polling does
+not generate additional telemetry requests because its documented merged-state
+response is itself the periodic reconciliation source. The targeted request asks
+a device to report current telemetry; it does not set state, publish MQTT, scan
+the network or command equipment. Duplicate requests are coalesced, and unload
+or disconnection cancels the active pass.
 
 Covers and switches are available only when the last REST update succeeded, the
 MQTT subscription is connected, and the device has not explicitly reported
 itself offline. If the broker connection is lost, live covers and switches
 become unavailable but retain their last known state. Reconnection and a
-successful subscription restore broker availability. The always-available MQTT
-connection diagnostic shows the broker state.
+successful subscription restore broker availability and request fresh gate and
+RFID telemetry. The always-available MQTT connection diagnostic shows the
+broker state. RFID switch state represents only the existing reader login/logout
+state; the integration does not discover or retain individual signed-in users.
 
 The integration does not currently implement per-device MQTT staleness timers.
 A device that stops publishing without reporting offline may therefore retain
-its previous availability. MQTT does not infer cover movement; only validated
-position/open values are shown. Devices added after setup may require an
-integration reload before new entities appear.
+its previous availability between reconciliation polls. MQTT does not infer
+cover movement; only validated position/open values are shown. Devices added
+after setup may require an integration reload before new entities appear.
 
 ## Known limitations
 

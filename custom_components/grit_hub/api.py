@@ -143,6 +143,33 @@ class GritHubApiClient:
         data = await self.request("GET", f"/api/{quote(device_type)}")
         return normalise_list(data)
 
+    async def request_device_telemetry(
+        self,
+        device_type: str,
+        device_id: str,
+    ) -> None:
+        """Request current telemetry for one gate or RFID reader."""
+        if device_type not in {"gate", "rfid"}:
+            raise GritHubApiError("Telemetry device type is invalid")
+        if not isinstance(device_id, str):
+            raise GritHubApiError("Telemetry device identifier is invalid")
+        normalized_id = device_id.strip()
+        if (
+            not normalized_id
+            or normalized_id in {".", ".."}
+            or len(normalized_id) > 128
+            or not normalized_id.isprintable()
+        ):
+            raise GritHubApiError("Telemetry device identifier is invalid")
+        response = await self.request(
+            "POST",
+            "/api/device/mesh-telemetry/refresh/"
+            f"{quote(device_type, safe='')}/{quote(normalized_id, safe='')}",
+            timeout=REST_DISCOVERY_TIMEOUT,
+        )
+        if not isinstance(response, dict) or response.get("success") is not True:
+            raise GritHubApiError("Telemetry refresh request failed")
+
     async def set_device_state(self, device_type: str, device_id: str | int, on: bool) -> Any:
         value = "true" if on else "false"
         # Most controllable GRIT devices use state/{onOff}. Some endpoints use

@@ -1,6 +1,7 @@
 """Data update coordinator for GRIT Hub."""
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import logging
@@ -10,7 +11,12 @@ from typing import Any, Callable
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import GritHubApiClient, GritHubApiError
-from .const import DEVICE_TYPES, DOMAIN, SWITCH_DEVICE_TYPES
+from .const import (
+    DEVICE_TYPES,
+    DOMAIN,
+    REST_DISCOVERY_TIMEOUT,
+    SWITCH_DEVICE_TYPES,
+)
 from .hub import derive_gritlock_state
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,6 +47,18 @@ _FIELD_CATEGORIES = {
     "firmware_version": "firmware",
 }
 _STATE_FIELDS = tuple(_FIELD_CATEGORIES)
+_LOCAL_RECEIVE_SEQUENCE_KEY = "_receive_sequence"
+
+_RECONCILIATION_DEVICE_TYPES = ("gate", "rfid")
+_RECONCILIATION_CATEGORIES = {"gate": "gate", "rfid": "state"}
+_RECONCILIATION_FIELDS = {
+    "gate": ("position", "open"),
+    "rfid": ("state",),
+}
+_RECONCILIATION_CONCURRENCY = 4
+_RECONCILIATION_MAX_TARGETS = 64
+_RECONCILIATION_MAX_PASSES = 2
+_RECONCILIATION_PASS_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
 _INVALID = object()
 
 
@@ -108,6 +126,12 @@ def _source_sequence(value: Any) -> int | object:
     return sequence
 
 
+def _local_receive_sequence(value: Any) -> int | object:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return _INVALID
+    return value
+
+
 def _source_timestamp(value: Any) -> datetime | object:
     if isinstance(value, datetime):
         parsed = value
@@ -167,6 +191,13 @@ def _device_identifiers(device: Any) -> set[str]:
     return identifiers
 
 
+def _telemetry_identifier(device: Any) -> str | None:
+    """Return the documented mesh-device ID used by the telemetry route."""
+    if not isinstance(device, dict):
+        return None
+    return _normalize_identifier(device.get("id"))
+
+
 def _sanitize_mqtt_state(value: Any) -> dict[str, Any] | None:
     """Return a bounded copy of persisted MQTT state."""
     if not isinstance(value, dict):
@@ -188,13 +219,16 @@ def _sanitize_mqtt_state(value: Any) -> dict[str, Any] | None:
         if converted is not _INVALID:
             sanitized[field] = converted
 
-    message_type = _normalize_message_type(value.get("last_message_type"))
-    if message_type is not None:
-        sanitized["last_message_type"] = message_type
 
     received_at = _source_timestamp(value.get("last_received_at"))
     if received_at is not _INVALID:
         sanitized["last_received_at"] = received_at
+
+    receive_sequence = _local_receive_sequence(
+        value.get(_LOCAL_RECEIVE_SEQUENCE_KEY)
+    )
+    if receive_sequence is not _INVALID:
+        sanitized[_LOCAL_RECEIVE_SEQUENCE_KEY] = receive_sequence
 
     source_sequence = _source_sequence(value.get("source_sequence"))
     if source_sequence is not _INVALID:
@@ -227,7 +261,10 @@ def _sanitize_mqtt_state(value: Any) -> dict[str, Any] | None:
 
 
 def _preserve_mqtt_state(
-    previous_devices: Any, refreshed_devices: dict[str, Any]
+    previous_devices: Any,
+    refreshed_devices: dict[str, Any],
+    *,
+    refresh_boundary: int | None = None,
 ) -> None:
     """Transfer sanitized state only across unique same-type identities."""
     if not isinstance(previous_devices, dict):
@@ -272,6 +309,22 @@ def _preserve_mqtt_state(
             if len(candidates) != 1:
                 continue
             state = _sanitize_mqtt_state(candidates[0].get(MQTT_STATE_KEY))
+            if (
+                state is not None
+                and refresh_boundary is not None
+                and device_type in _RECONCILIATION_FIELDS
+            ):
+                receive_sequence = _local_receive_sequence(
+                    state.get(_LOCAL_RECEIVE_SEQUENCE_KEY)
+                )
+                if (
+                    receive_sequence is _INVALID
+                    or receive_sequence <= refresh_boundary
+                ):
+                    state = dict(state)
+                    for field in _RECONCILIATION_FIELDS[device_type]:
+                        state.pop(field, None)
+
             if state is not None:
                 refreshed[MQTT_STATE_KEY] = state
 
@@ -357,9 +410,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.api = api
         self._mqtt_connected = False
+        self._mqtt_receive_sequence = 0
         self._refresh_sequence = 0
         self._hub_update_sequence = 0
         self._gritlock_update_sequence = 0
+        self._reconciliation_task: asyncio.Task[None] | None = None
+        self._reconcile_again = False
+        self._reconciliation_enabled = True
         self._expected_mqtt_hub_id = (
             None
             if expected_mqtt_hub_id is None
@@ -424,10 +481,134 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._mqtt_connected == connected:
             return False
         self._mqtt_connected = connected
+        if not connected:
+            self.cancel_state_reconciliation()
         self.async_update_listeners()
         return True
 
+    def start_state_reconciliation(self) -> bool:
+        """Start or coalesce one gate/RFID telemetry reconciliation pass."""
+        if not self._reconciliation_enabled or not self._mqtt_connected:
+            return False
+        task = self._reconciliation_task
+        if task is not None and not task.done():
+            self._reconcile_again = True
+            return False
+        self._reconcile_again = False
+        self._reconciliation_task = asyncio.create_task(
+            self._async_reconciliation_loop()
+        )
+        return True
+
+    def cancel_state_reconciliation(self) -> None:
+        """Cancel any in-flight telemetry reconciliation pass."""
+        self._reconcile_again = False
+        task = self._reconciliation_task
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def async_stop_state_reconciliation(self) -> None:
+        """Cancel and await reconciliation during unload or failed setup."""
+        self._reconciliation_enabled = False
+        self.cancel_state_reconciliation()
+        task = self._reconciliation_task
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _async_reconciliation_loop(self) -> None:
+        current_task = asyncio.current_task()
+        try:
+            for _ in range(_RECONCILIATION_MAX_PASSES):
+                if (
+                    not self._reconciliation_enabled
+                    or not self._mqtt_connected
+                ):
+                    break
+                self._reconcile_again = False
+                reconciled = await self._async_request_device_telemetry()
+                if not reconciled:
+                    _LOGGER.warning(
+                        "GRIT device state reconciliation was incomplete"
+                    )
+                if not self._reconcile_again:
+                    break
+            self._reconcile_again = False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.warning("GRIT device state reconciliation failed")
+        finally:
+            if self._reconciliation_task is current_task:
+                restart = (
+                    self._reconcile_again
+                    and self._reconciliation_enabled
+                    and self._mqtt_connected
+                )
+                self._reconciliation_task = None
+                self._reconcile_again = False
+                if restart:
+                    self.start_state_reconciliation()
+
+    async def _async_request_device_telemetry(self) -> bool:
+        """Request current telemetry for every known gate and RFID reader."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return False
+
+        targets: list[tuple[str, str]] = []
+        for device_type in _RECONCILIATION_DEVICE_TYPES:
+            collection = devices.get(device_type)
+            if not isinstance(collection, list):
+                continue
+            identifiers = [
+                _telemetry_identifier(device) for device in collection
+            ]
+            counts = Counter(
+                identifier
+                for identifier in identifiers
+                if identifier is not None
+            )
+            targets.extend(
+                (device_type, identifier)
+                for identifier in identifiers
+                if identifier is not None and counts[identifier] == 1
+            )
+
+        truncated = len(targets) > _RECONCILIATION_MAX_TARGETS
+        targets = targets[:_RECONCILIATION_MAX_TARGETS]
+        semaphore = asyncio.Semaphore(_RECONCILIATION_CONCURRENCY)
+
+        async def request_one(
+            device_type: str,
+            device_id: str,
+        ) -> bool:
+            async with semaphore:
+                try:
+                    await self.api.request_device_telemetry(
+                        device_type,
+                        device_id,
+                    )
+                except Exception:
+                    return False
+                return True
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    *(
+                        request_one(device_type, device_id)
+                        for device_type, device_id in targets
+                    )
+                ),
+                timeout=_RECONCILIATION_PASS_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return False
+        return not truncated and all(results)
+
     async def _async_update_data(self) -> dict[str, Any]:
+        refresh_boundary = self._mqtt_receive_sequence
         self._refresh_sequence += 1
         refresh_sequence = self._refresh_sequence
         hub_refreshed = False
@@ -465,7 +646,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data["devices"][dev_type] = []
                 data["errors"][dev_type] = str(err)
 
-        _preserve_mqtt_state(previous_devices, data["devices"])
+        latest_data = self.data if isinstance(self.data, dict) else previous_data
+        latest_devices = latest_data.get("devices", previous_devices)
+        _preserve_mqtt_state(
+            latest_devices,
+            data["devices"],
+            refresh_boundary=refresh_boundary,
+        )
         if hub_refreshed:
             self._hub_update_sequence = refresh_sequence
         if triggers_refreshed:
@@ -576,18 +763,22 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             previous_sequence = marker.get("source_sequence")
             previous_timestamp = marker.get("source_timestamp")
             if (
-                sequence_present
-                and previous_sequence is not None
-                and source_sequence <= previous_sequence
+                previous_sequence is not None
+                and (
+                    not sequence_present
+                    or source_sequence <= previous_sequence
+                )
             ):
                 _LOGGER.debug(
                     "GRIT MQTT message rejected: update is not newer"
                 )
                 return False
             if (
-                timestamp_present
-                and previous_timestamp is not None
-                and source_timestamp <= previous_timestamp
+                previous_timestamp is not None
+                and (
+                    not timestamp_present
+                    or source_timestamp <= previous_timestamp
+                )
             ):
                 _LOGGER.debug(
                     "GRIT MQTT message rejected: update is not newer"
@@ -605,18 +796,17 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             (not timestamp_present)
             or previous_state.get("source_timestamp") == source_timestamp
         )
-        if (
-            same_values
-            and same_ordering
-            and previous_state.get("last_message_type")
-            == normalized_message_type
-        ):
+        if same_values and same_ordering:
             _LOGGER.debug("GRIT MQTT message ignored: duplicate state")
             return False
 
         next_state = dict(previous_state)
         next_state.update(updates)
-        next_state["last_message_type"] = normalized_message_type
+        self._mqtt_receive_sequence += 1
+        next_state[_LOCAL_RECEIVE_SEQUENCE_KEY] = (
+            self._mqtt_receive_sequence
+        )
+
         next_state["last_received_at"] = datetime.now(timezone.utc)
         if sequence_present:
             next_state["source_sequence"] = source_sequence
