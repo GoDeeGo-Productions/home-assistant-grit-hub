@@ -23,6 +23,8 @@ from .hub import derive_gritlock_state
 
 _LOGGER = logging.getLogger(__name__)
 MQTT_STATE_KEY = "_grit_mqtt"
+RFID_ENABLED_KEY = "_grit_rfid_enabled"
+RFID_STATE_GENERATION_KEY = "_grit_rfid_state_generation"
 
 _IDENTIFIER_KEYS = (
     "id",
@@ -54,18 +56,16 @@ _LOCAL_RECEIVE_SEQUENCE_KEY = "_receive_sequence"
 _FIELD_OBSERVATIONS_KEY = "_field_observations"
 
 _RECONCILIATION_DEVICE_TYPES = ("gate", "rfid")
-_COMMAND_STATE_FIELDS = {
-    "gate": "open",
-    "rfid": "locked",
-}
-_LIVE_STATE_FIELDS = {
-    "gate": ("position", "open"),
-    "rfid": ("locked",),
-}
+_COMMAND_STATE_FIELDS = {"gate": "open"}
+_LIVE_STATE_FIELDS = {"gate": ("position", "open")}
 _RECONCILIATION_CONCURRENCY = 4
 _RECONCILIATION_MAX_TARGETS = 64
 _RECONCILIATION_MAX_PASSES = 2
 _RECONCILIATION_PASS_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
+_MAX_RFID_STATE_TARGETS = 64
+_RFID_STATE_CONCURRENCY = 4
+_RFID_STATE_REFRESH_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
+_MAX_RFID_READ_TASKS = 64
 _MAX_CONFIRM_TIMEOUT = REST_DISCOVERY_TIMEOUT * 6
 _GRITLOCK_SETTLE_TIME = 0.25
 _MAX_GRITLOCK_OBSERVATIONS = 64
@@ -431,20 +431,7 @@ def _payload_state(
             elif position <= 65:
                 updates["open"] = False
 
-    if device_type == "rfid":
-        if root_message_type == "sts":
-            enabled = _strict_binary_bool(payload.get("s", _INVALID))
-            if enabled is not _INVALID:
-                updates["locked"] = not enabled
-        elif root_message_type in {"s", "st"}:
-            enabled = _first_valid(
-                payload,
-                ("state", "s"),
-                _strict_bool,
-            )
-            if enabled is not _INVALID:
-                updates["locked"] = not enabled
-    elif (
+    if (
         device_type in SWITCH_DEVICE_TYPES
         and root_message_type in {"s", "st", "gl", "gls"}
     ):
@@ -518,6 +505,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tuple[str, str], asyncio.Task[None]
         ] = {}
         self._telemetry_request_waiters: dict[tuple[str, str], int] = {}
+        self._rfid_state_request_sequence = 0
+        self._rfid_read_semaphore = asyncio.Semaphore(_RFID_STATE_CONCURRENCY)
+        self._rfid_read_tasks: set[asyncio.Task[dict[str, Any]]] = set()
         self._mqtt_state_waiters: set[asyncio.Future[None]] = set()
         self._expected_mqtt_hub_id = (
             None
@@ -591,6 +581,297 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def gritlock_update_sequence(self) -> int:
         """Return the last generation with a successful trigger read."""
         return self._gritlock_update_sequence
+
+    def _rfid_state_observation(
+        self,
+        device_id: Any,
+        devices: Any | None = None,
+    ) -> tuple[bool | None, int]:
+        """Return one exact RFID REST state and its bounded request generation."""
+        normalized_id = _normalize_identifier(device_id)
+        if normalized_id is None:
+            return None, 0
+        if devices is None:
+            data = self.data if isinstance(self.data, dict) else {}
+            devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return None, 0
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return None, 0
+        matches = [
+            device
+            for device in collection
+            if _telemetry_identifier(device) == normalized_id
+        ]
+        if len(matches) != 1:
+            return None, 0
+        enabled = matches[0].get(RFID_ENABLED_KEY)
+        generation = _local_receive_sequence(
+            matches[0].get(RFID_STATE_GENERATION_KEY)
+        )
+        if not isinstance(enabled, bool) or generation is _INVALID:
+            return None, 0
+        return enabled, generation
+
+    def rfid_enabled(self, device_id: Any) -> bool | None:
+        """Return current RFID enabled state from an individual REST read."""
+        enabled, _generation = self._rfid_state_observation(device_id)
+        return enabled
+
+    def rfid_state_generation(self, device_id: Any) -> int:
+        """Return the last valid individual RFID request generation."""
+        _enabled, generation = self._rfid_state_observation(device_id)
+        return generation
+
+    @staticmethod
+    def _preserve_rfid_rest_state(
+        previous_devices: Any,
+        refreshed_devices: Any,
+    ) -> None:
+        """Preserve only newer, exact, uniquely matched RFID REST state."""
+        if not isinstance(previous_devices, dict) or not isinstance(
+            refreshed_devices, dict
+        ):
+            return
+        previous = previous_devices.get("rfid")
+        refreshed = refreshed_devices.get("rfid")
+        if not isinstance(previous, list) or not isinstance(refreshed, list):
+            return
+
+        previous_ids = [_telemetry_identifier(device) for device in previous]
+        refreshed_ids = [_telemetry_identifier(device) for device in refreshed]
+        previous_counts = Counter(
+            identifier for identifier in previous_ids if identifier is not None
+        )
+        refreshed_counts = Counter(
+            identifier for identifier in refreshed_ids if identifier is not None
+        )
+        previous_by_id = {
+            identifier: device
+            for identifier, device in zip(previous_ids, previous)
+            if identifier is not None
+            and previous_counts[identifier] == 1
+            and isinstance(device, dict)
+        }
+
+        for identifier, device in zip(refreshed_ids, refreshed):
+            if (
+                identifier is None
+                or refreshed_counts[identifier] != 1
+                or not isinstance(device, dict)
+            ):
+                continue
+            prior = previous_by_id.get(identifier)
+            if prior is None:
+                continue
+            enabled = prior.get(RFID_ENABLED_KEY)
+            prior_generation = _local_receive_sequence(
+                prior.get(RFID_STATE_GENERATION_KEY)
+            )
+            current_generation = _local_receive_sequence(
+                device.get(RFID_STATE_GENERATION_KEY)
+            )
+            if (
+                not isinstance(enabled, bool)
+                or prior_generation is _INVALID
+                or (
+                    current_generation is not _INVALID
+                    and current_generation >= prior_generation
+                )
+            ):
+                continue
+            device[RFID_ENABLED_KEY] = enabled
+            device[RFID_STATE_GENERATION_KEY] = prior_generation
+
+    @staticmethod
+    def _apply_rfid_detail(
+        devices: Any,
+        requested_id: str,
+        detail: Any,
+        request_generation: int,
+    ) -> bool:
+        """Merge one strict detail response into one exact unique RFID record."""
+        if not isinstance(devices, dict) or not isinstance(detail, dict):
+            return False
+        detail_id = _normalize_identifier(detail.get("id"))
+        enabled = detail.get("state")
+        if detail_id != requested_id or not isinstance(enabled, bool):
+            return False
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return False
+        matches = [
+            (index, device)
+            for index, device in enumerate(collection)
+            if _telemetry_identifier(device) == requested_id
+        ]
+        if len(matches) != 1:
+            return False
+        index, current = matches[0]
+        if not isinstance(current, dict):
+            return False
+        current_generation = _local_receive_sequence(
+            current.get(RFID_STATE_GENERATION_KEY)
+        )
+        if (
+            current_generation is not _INVALID
+            and current_generation >= request_generation
+        ):
+            return False
+
+        merged = dict(current)
+        merged.pop("state", None)
+        merged.pop("lockout", None)
+        for field in ("name", "displayName", "version", "onlineStatus"):
+            if field in detail:
+                merged[field] = detail[field]
+        merged[RFID_ENABLED_KEY] = enabled
+        merged[RFID_STATE_GENERATION_KEY] = request_generation
+        collection[index] = merged
+        return True
+
+    async def _async_read_rfid_detail(
+        self,
+        device_id: str,
+    ) -> tuple[int, dict[str, Any]]:
+        """Run one tracked, globally concurrency-bounded RFID REST read."""
+        if not self._reconciliation_enabled:
+            raise GritHubApiError("RFID state reads are unavailable")
+        async with self._rfid_read_semaphore:
+            if not self._reconciliation_enabled:
+                raise GritHubApiError("RFID state reads are unavailable")
+            if len(self._rfid_read_tasks) >= _MAX_RFID_READ_TASKS:
+                raise GritHubApiError("RFID state request limit reached")
+            if self._rfid_state_request_sequence >= _MAX_SOURCE_SEQUENCE:
+                raise GritHubApiError("RFID state generation limit reached")
+            self._rfid_state_request_sequence += 1
+            request_generation = self._rfid_state_request_sequence
+            task = asyncio.create_task(self.api.get_rfid_device(device_id))
+            self._rfid_read_tasks.add(task)
+            try:
+                detail = await task
+            finally:
+                self._rfid_read_tasks.discard(task)
+            return request_generation, detail
+    async def _async_refresh_rfid_states(self, devices: Any) -> bool:
+        """Refresh at most 64 exact RFID records with concurrency four."""
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return False
+
+        identifiers = [_telemetry_identifier(device) for device in collection]
+        counts = Counter(
+            identifier for identifier in identifiers if identifier is not None
+        )
+        incomplete = any(identifier is None for identifier in identifiers) or any(
+            count != 1 for count in counts.values()
+        )
+        targets: list[str] = []
+        for identifier in identifiers:
+            if (
+                identifier is not None
+                and counts[identifier] == 1
+                and identifier not in targets
+            ):
+                targets.append(identifier)
+        truncated = len(targets) > _MAX_RFID_STATE_TARGETS
+        targets = targets[:_MAX_RFID_STATE_TARGETS]
+        if not targets:
+            return not incomplete and not truncated
+        async def read_one(device_id: str) -> bool:
+            try:
+                generation, detail = await self._async_read_rfid_detail(
+                    device_id
+                )
+            except Exception:
+                return False
+            return self._apply_rfid_detail(
+                devices,
+                device_id,
+                detail,
+                generation,
+            )
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(read_one(device_id) for device_id in targets)),
+                timeout=_RFID_STATE_REFRESH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return False
+        return not incomplete and not truncated and all(results)
+
+    async def async_confirm_rfid_state(
+        self,
+        device_id: Any,
+        expected_enabled: bool,
+        *,
+        after_generation: int,
+        timeout: float,
+    ) -> bool:
+        """Require a fresh individual REST read matching a requested state."""
+        normalized_id = _normalize_identifier(device_id)
+        if (
+            normalized_id is None
+            or not isinstance(expected_enabled, bool)
+            or _local_receive_sequence(after_generation) is _INVALID
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= _MAX_CONFIRM_TIMEOUT
+            or not self._reconciliation_enabled
+        ):
+            return False
+
+        async def read_and_confirm() -> bool:
+            generation, detail = await self._async_read_rfid_detail(normalized_id)
+            detail_id = (
+                _normalize_identifier(detail.get("id"))
+                if isinstance(detail, dict)
+                else None
+            )
+            detail_enabled = (
+                detail.get("state") if isinstance(detail, dict) else None
+            )
+
+            data = self.data if isinstance(self.data, dict) else {}
+            devices = data.get("devices")
+            if isinstance(devices, dict):
+                next_data = dict(data)
+                next_devices = dict(devices)
+                collection = devices.get("rfid")
+                next_devices["rfid"] = (
+                    [dict(device) for device in collection]
+                    if isinstance(collection, list)
+                    else []
+                )
+                next_data["devices"] = next_devices
+                if self._apply_rfid_detail(
+                    next_devices,
+                    normalized_id,
+                    detail,
+                    generation,
+                ):
+                    self.async_set_updated_data(next_data)
+
+            enabled, current_generation = self._rfid_state_observation(
+                normalized_id
+            )
+            return (
+                detail_id == normalized_id
+                and isinstance(detail_enabled, bool)
+                and detail_enabled is expected_enabled
+                and generation > after_generation
+                and current_generation >= generation
+                and enabled is expected_enabled
+            )
+
+        try:
+            return await asyncio.wait_for(read_and_confirm(), timeout=timeout)
+        except (asyncio.TimeoutError, GritHubApiError):
+            return False
 
     def _rest_gritlock_participants(
         self,
@@ -882,6 +1163,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await asyncio.gather(*telemetry_tasks, return_exceptions=True)
         self._telemetry_request_tasks.clear()
         self._telemetry_request_waiters.clear()
+        rfid_tasks = tuple(self._rfid_read_tasks)
+        for rfid_task in rfid_tasks:
+            if not rfid_task.done():
+                rfid_task.cancel()
+        if rfid_tasks:
+            await asyncio.gather(*rfid_tasks, return_exceptions=True)
+        self._rfid_read_tasks.clear()
         settle_task = self._gritlock_settle_task
         self._reset_gritlock_mqtt_state()
         if settle_task is not None and not settle_task.done():
@@ -1068,7 +1356,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         after_sequence: int,
         timeout: float,
     ) -> bool:
-        """Request telemetry and require a newer matching MQTT observation."""
+        """Request gate telemetry and require a newer matching MQTT observation."""
         field = _COMMAND_STATE_FIELDS.get(device_type)
         normalized_id = _normalize_identifier(device_id)
         if (
@@ -1093,8 +1381,6 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if observation is expected:
                 return True
-            if device_type == "rfid" and observation is not _INVALID:
-                return False
             return None
 
         async def request_and_wait() -> bool:
@@ -1300,8 +1586,21 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     data["devices"][dev_type] = []
                 data["errors"][dev_type] = str(err)
 
+        self._preserve_rfid_rest_state(
+            previous_devices,
+            data["devices"],
+        )
+        if not await self._async_refresh_rfid_states(data["devices"]):
+            data["errors"]["rfid_state"] = (
+                "RFID state refresh was incomplete"
+            )
+
         latest_data = self.data if isinstance(self.data, dict) else previous_data
         latest_devices = latest_data.get("devices", previous_devices)
+        self._preserve_rfid_rest_state(
+            latest_devices,
+            data["devices"],
+        )
         _preserve_mqtt_state(
             latest_devices,
             data["devices"],

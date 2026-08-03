@@ -282,8 +282,6 @@ class ApiHubTests(unittest.TestCase):
                 {
                     "id": "device-fabricated",
                     "name": "Fabricated Reader",
-                    "state": False,
-                    "lockout": False,
                     "gritLockEnabled": True,
                     "gritLockState": False,
                 }
@@ -293,23 +291,83 @@ class ApiHubTests(unittest.TestCase):
         for private in private_values:
             self.assertNotIn(private, rendered)
 
-    def test_rfid_lockout_is_strict_boolean_and_type_scoped(self):
-        for value, expected in ((True, True), (False, False), (1, None), ("false", None)):
-            with self.subTest(value=value):
+    def test_rfid_collection_drops_unproven_state_and_lockout(self):
+        for state in (True, False, 1, "false"):
+            with self.subTest(state=state):
                 rfid = API.sanitize_device_data(
-                    {"id": "reader-test", "lockout": value},
+                    {
+                        "id": "reader-test",
+                        "state": state,
+                        "lockout": False,
+                    },
                     device_type="rfid",
                 )
-                if expected is None:
-                    self.assertNotIn("lockout", rfid)
-                else:
-                    self.assertIs(rfid["lockout"], expected)
+                self.assertNotIn("state", rfid)
+                self.assertNotIn("lockout", rfid)
 
-        unrelated = API.sanitize_device_data(
-            {"id": "gate-test", "lockout": True},
-            device_type="gate",
+    def test_individual_rfid_get_is_bounded_encoded_and_sanitized(self):
+        client = self.client()
+        calls = []
+        private_value = "fabricated-private-reader-data"
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return {
+                "id": "reader/id",
+                "state": False,
+                "lockout": False,
+                "onlineStatus": True,
+                "displayName": "Fabricated Reader",
+                "version": "1.2.3-test",
+                "users": [{"name": private_value}],
+            }
+
+        client.request = request
+        result = asyncio.run(client.get_rfid_device("reader/id"))
+
+        self.assertEqual(
+            result,
+            {
+                "id": "reader/id",
+                "state": False,
+                "onlineStatus": True,
+                "displayName": "Fabricated Reader",
+                "version": "1.2.3-test",
+            },
         )
-        self.assertNotIn("lockout", unrelated)
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "GET",
+                    "/api/rfid/reader%2Fid",
+                    {"timeout": API.REST_DISCOVERY_TIMEOUT},
+                )
+            ],
+        )
+        self.assertNotIn(private_value, repr(result))
+        self.assertNotIn("lockout", result)
+
+    def test_individual_rfid_state_and_online_are_strict_booleans(self):
+        for value in (1, 0, "true", None, [], {}):
+            with self.subTest(value=value):
+                result = API.sanitize_rfid_device_data(
+                    {
+                        "id": "reader-test",
+                        "state": value,
+                        "onlineStatus": value,
+                    }
+                )
+                self.assertEqual(result, {"id": "reader-test"})
+
+    def test_individual_rfid_identifier_validation_fails_closed(self):
+        client = self.client()
+        client.request = mock.AsyncMock()
+        for value in (None, True, 42, "", " ", ".", "..", "line\nbreak", "x" * 129):
+            with self.subTest(value=value):
+                with self.assertRaises(API.GritHubApiError):
+                    asyncio.run(client.get_rfid_device(value))
+        client.request.assert_not_awaited()
 
     def test_targeted_telemetry_refresh_uses_documented_bounded_endpoint(self):
         client = self.client()
