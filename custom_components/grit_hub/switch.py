@@ -43,11 +43,16 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
         if "state" in mqtt_state:
             state = mqtt_state["state"]
             return state if isinstance(state, bool) else None
+        if self.device_type == "rfid":
+            return None
         return bool_state(self.current_device)
 
     @property
     def extra_state_attributes(self):
-        return self.diagnostic_attributes
+        attributes = self.diagnostic_attributes
+        if self.device_type == "rfid":
+            attributes.pop("state", None)
+        return attributes
 
     async def async_turn_on(self, **kwargs):
         await self._async_set_state(True)
@@ -59,16 +64,40 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
         observed = self.current_device_observation
         if observed is None:
             return None
-        rest_state = bool_state(observed)
-        if self.device_type != "rfid":
-            return rest_state
-        mqtt_state = self.mqtt_state
-        if "state" in mqtt_state:
-            state = mqtt_state["state"]
-            return state if isinstance(state, bool) else None
-        return rest_state
+        return bool_state(observed)
 
     async def _async_set_state(self, state: bool) -> None:
+        if self.device_type == "rfid":
+            if not self.coordinator.mqtt_connected:
+                raise HomeAssistantError(
+                    "Device state could not be confirmed"
+                )
+            try:
+                await self.coordinator.api.set_device_state(
+                    self.device_type,
+                    self._device_id,
+                    state,
+                )
+                confirmation_boundary = self.coordinator.mqtt_receive_sequence
+                confirmed = await self.coordinator.async_confirm_device_state(
+                    self.device_type,
+                    self._device_id,
+                    state,
+                    after_sequence=confirmation_boundary,
+                    timeout=DEVICE_CONFIRM_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                raise HomeAssistantError(
+                    "Device state could not be confirmed"
+                ) from err
+            if not confirmed:
+                raise HomeAssistantError(
+                    "Device state could not be confirmed"
+                )
+            return
+
         try:
             await self.coordinator.api.set_device_state(
                 self.device_type,

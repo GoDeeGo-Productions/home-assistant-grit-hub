@@ -196,6 +196,7 @@ def passive_mqtt_discover(
     client: Any | None = None
     active = True
     subscribed = False
+    subscription_mid: Any | None = None
     failed = False
     cancelled = False
     hub_ids: set[str] = set()
@@ -212,7 +213,7 @@ def passive_mqtt_discover(
         reason_code: Any,
         _properties: Any = None,
     ) -> None:
-        nonlocal subscribed, failed
+        nonlocal failed, subscription_mid
         if not is_current(callback_client):
             return
         if not _reason_code_is_success(reason_code):
@@ -222,19 +223,51 @@ def passive_mqtt_discover(
                     condition.notify_all()
             return
         try:
-            result, _message_id = callback_client.subscribe(
+            result, message_id = callback_client.subscribe(
                 topic_filter,
                 qos=MQTT_QOS,
             )
         except Exception:
             result = None
+            message_id = None
         with condition:
             if not active or callback_client is not client:
                 return
             if not _reason_code_is_success(result):
                 failed = True
             else:
+                subscription_mid = message_id
+            condition.notify_all()
+
+    def on_subscribe(
+        callback_client: Any,
+        _userdata: Any,
+        message_id: Any,
+        reason_codes: Any,
+        _properties: Any = None,
+    ) -> None:
+        nonlocal subscribed, failed
+        if not is_current(callback_client):
+            return
+        if isinstance(reason_codes, (list, tuple)):
+            acknowledged = bool(reason_codes) and all(
+                _reason_code_is_success(reason_code)
+                for reason_code in reason_codes
+            )
+        else:
+            acknowledged = _reason_code_is_success(reason_codes)
+        with condition:
+            if (
+                not active
+                or callback_client is not client
+                or subscription_mid is None
+                or message_id != subscription_mid
+            ):
+                return
+            if acknowledged:
                 subscribed = True
+            else:
+                failed = True
             condition.notify_all()
 
     def on_connect_fail(callback_client: Any, _userdata: Any) -> None:
@@ -269,7 +302,11 @@ def passive_mqtt_discover(
         if hub_id is None:
             return
         with condition:
-            if not active or callback_client is not client:
+            if (
+                not active
+                or callback_client is not client
+                or not subscribed
+            ):
                 return
             if (
                 expected_hub_id is not None
@@ -287,6 +324,7 @@ def passive_mqtt_discover(
         client.on_connect_fail = on_connect_fail
         client.on_disconnect = on_disconnect
         client.on_message = on_message
+        client.on_subscribe = on_subscribe
         client.connect_timeout = float(timeout)
         if username is not None:
             client.username_pw_set(username, password)

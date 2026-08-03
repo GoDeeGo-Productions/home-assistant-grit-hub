@@ -66,6 +66,7 @@
     },
     "error": {
       "cannot_connect": "Could not connect to GRIT Hub. Check the API URL, token, network path and SSL setting.",
+      "invalid_auth": "GRIT rejected the bearer token. Enter a token accepted by the authenticated current-hub API.",
       "invalid_base_url": "Enter a valid GRIT API base URL.",
       "invalid_token": "Enter a GRIT API bearer token.",
       "invalid_verify_ssl": "Select a valid API certificate-verification setting.",

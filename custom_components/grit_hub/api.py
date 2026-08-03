@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 from urllib.parse import quote
 
@@ -13,7 +14,11 @@ from .hub import normalize_hub_id, sanitize_hub_data
 
 
 class GritHubApiError(Exception):
-    """Raised when the GRIT Hub API returns an error."""
+    """Raised when the GRIT Hub API returns a safe, bounded error."""
+
+    def __init__(self, message: str, *, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
 
 
 class GritHubApiClient:
@@ -56,11 +61,12 @@ class GritHubApiClient:
                 params=params,
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
-                text = await resp.text()
                 if resp.status >= 400:
                     raise GritHubApiError(
-                        f"{method.upper()} {endpoint} failed: HTTP {resp.status}"
+                        f"{method.upper()} {endpoint} failed: HTTP {resp.status}",
+                        http_status=resp.status,
                     )
+                text = await resp.text()
                 if not text:
                     return None
                 ctype = resp.headers.get("Content-Type", "")
@@ -141,7 +147,9 @@ class GritHubApiClient:
 
     async def get_collection(self, device_type: str) -> list[dict[str, Any]]:
         data = await self.request("GET", f"/api/{quote(device_type)}")
-        return normalise_list(data)
+        items = normalise_list(data)
+        sanitized = [sanitize_device_data(item) for item in items]
+        return [item for item in sanitized if item]
 
     async def request_device_telemetry(
         self,
@@ -205,6 +213,88 @@ def endpoint_identifier(path: str) -> str:
     visible = segments[:visible_count]
     suffix = "/*" if len(segments) > len(visible) else ""
     return f"/{'/'.join(visible)}{suffix}"
+
+
+_DEVICE_IDENTIFIER_FIELDS = (
+    "id",
+    "deviceId",
+    "deviceID",
+    "_id",
+    "uuid",
+    "key",
+    "serialNumber",
+    "serial",
+    "deviceIdentifier",
+)
+_DEVICE_NAME_FIELDS = ("name", "displayName", "label", "description", "deviceName")
+_DEVICE_STATE_FIELDS = (
+    "status",
+    "state",
+    "mode",
+    "on",
+    "onOff",
+    "enabled",
+    "active",
+    "open",
+    "locked",
+    "isOn",
+)
+_DEVICE_BOOLEAN_FIELDS = ("gritLockEnabled", "gritLockState")
+_MAX_DEVICE_TEXT_LENGTH = 128
+
+
+def _bounded_device_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if (
+        not value
+        or len(value) > _MAX_DEVICE_TEXT_LENGTH
+        or not value.isprintable()
+    ):
+        return None
+    return value
+
+
+def sanitize_device_data(value: Any) -> dict[str, Any]:
+    """Retain only bounded fields required by existing entities and commands."""
+    if not isinstance(value, dict):
+        return {}
+
+    sanitized: dict[str, Any] = {}
+    for field in _DEVICE_IDENTIFIER_FIELDS:
+        raw = value.get(field)
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, int):
+            sanitized[field] = raw
+            continue
+        text = _bounded_device_text(raw)
+        if text is not None:
+            sanitized[field] = text
+
+    for field in _DEVICE_NAME_FIELDS:
+        text = _bounded_device_text(value.get(field))
+        if text is not None:
+            sanitized[field] = text
+
+    for field in _DEVICE_STATE_FIELDS:
+        raw = value.get(field)
+        if isinstance(raw, bool) or isinstance(raw, int):
+            sanitized[field] = raw
+        elif isinstance(raw, float) and math.isfinite(raw):
+            sanitized[field] = raw
+        else:
+            text = _bounded_device_text(raw)
+            if text is not None:
+                sanitized[field] = text
+
+    for field in _DEVICE_BOOLEAN_FIELDS:
+        raw = value.get(field)
+        if isinstance(raw, bool):
+            sanitized[field] = raw
+
+    return sanitized
 
 
 def normalise_list(data: Any) -> list[dict[str, Any]]:

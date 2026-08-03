@@ -149,6 +149,97 @@ class ApiHubTests(unittest.TestCase):
         result = asyncio.run(client.get_hub())
         self.assertEqual(result, {})
 
+    def test_http_401_retains_only_status_and_never_reads_error_body(self):
+        client = self.client()
+        calls = []
+        private_body = "fabricated-private-error-body"
+
+        class FakeResponse:
+            status = 401
+            headers = {"Content-Type": "application/json"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def text(self):
+                raise AssertionError(private_body)
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                calls.append((method, url, kwargs))
+                return FakeResponse()
+
+        client.session = FakeSession()
+        with self.assertRaises(API.GritHubApiError) as captured:
+            asyncio.run(
+                client.request(
+                    "GET",
+                    "/api/hub/1",
+                    timeout=API.REST_DISCOVERY_TIMEOUT,
+                )
+            )
+
+        self.assertEqual(captured.exception.http_status, 401)
+        self.assertEqual(
+            str(captured.exception),
+            "GET /api/hub/* failed: HTTP 401",
+        )
+        self.assertNotIn(private_body, repr(captured.exception))
+        method, url, kwargs = calls[0]
+        self.assertEqual(method, "GET")
+        self.assertEqual(url, "https://api.fabricated.invalid/api/hub/1")
+        self.assertNotIn("fabricated-api-token", url)
+        self.assertEqual(
+            kwargs["headers"]["Authorization"],
+            "Bearer fabricated-api-token",
+        )
+
+    def test_device_collections_are_sanitized_before_return(self):
+        client = self.client()
+        private_values = (
+            "fabricated-person-name",
+            "fabricated-card-number",
+            "fabricated-diagnostic-payload",
+        )
+
+        async def request(_method, _path, **_kwargs):
+            return {
+                "items": [
+                    {
+                        "id": "device-fabricated",
+                        "name": "Fabricated Reader",
+                        "state": False,
+                        "gritLockEnabled": True,
+                        "gritLockState": False,
+                        "users": [{"name": private_values[0]}],
+                        "cardNumber": private_values[1],
+                        "diagnostics": {"raw": private_values[2]},
+                    }
+                ]
+            }
+
+        client.request = request
+        result = asyncio.run(client.get_collection("rfid"))
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "id": "device-fabricated",
+                    "name": "Fabricated Reader",
+                    "state": False,
+                    "gritLockEnabled": True,
+                    "gritLockState": False,
+                }
+            ],
+        )
+        rendered = repr(result)
+        for private in private_values:
+            self.assertNotIn(private, rendered)
+
     def test_targeted_telemetry_refresh_uses_documented_bounded_endpoint(self):
         client = self.client()
         calls = []

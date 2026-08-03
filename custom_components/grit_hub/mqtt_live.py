@@ -11,6 +11,7 @@ from collections.abc import Callable
 from enum import Enum, auto
 import importlib
 import json
+import math
 import logging
 import threading
 from typing import Any, TypeAlias
@@ -23,6 +24,32 @@ MQTT_KEEPALIVE = 60
 MAX_MQTT_PAYLOAD_SIZE = 65_536
 MAX_MQTT_TOPIC_LENGTH = 512
 MAX_MQTT_TOPIC_COMPONENT_LENGTH = 128
+MAX_MQTT_PAYLOAD_VALUE_TEXT_LENGTH = 128
+_ALLOWED_MQTT_PAYLOAD_KEYS = frozenset(
+    {
+        "p",
+        "position",
+        "open",
+        "state",
+        "s",
+        "onlineStatus",
+        "online",
+        "connected",
+        "available",
+        "sts",
+        "rssi",
+        "firmware_version",
+        "firmwareVersion",
+        "av",
+        "version",
+        "source_sequence",
+        "sequence",
+        "seq",
+        "source_timestamp",
+        "timestamp",
+        "ts",
+    }
+)
 
 GritMqttMessageCallback: TypeAlias = Callable[
     [str, str, str, str, dict[str, Any]], None
@@ -100,6 +127,9 @@ class GritLiveMqtt:
         self._client: Any | None = None
         self._network_loop_started = False
         self._connected = False
+        self._subscription_mid: int | None = None
+        self._subscription_in_progress = False
+        self._early_suback: tuple[int, bool] | None = None
         self._reported_connection_state: bool | None = None
         self._state = _LifecycleState.STOPPED
         self._state_condition = threading.Condition()
@@ -116,6 +146,10 @@ class GritLiveMqtt:
             if self._state is not _LifecycleState.STOPPED:
                 return False
             self._state = _LifecycleState.STARTING
+            self._connected = False
+            self._subscription_mid = None
+            self._subscription_in_progress = False
+            self._early_suback = None
             self._reported_connection_state = None
 
         client: Any | None = None
@@ -139,6 +173,7 @@ class GritLiveMqtt:
             client.on_connect = self._on_connect
             client.on_disconnect = self._on_disconnect
             client.on_message = self._on_message
+            client.on_subscribe = self._on_subscribe
 
             if self._use_tls:
                 client.tls_set()
@@ -195,6 +230,9 @@ class GritLiveMqtt:
             if self._state is _LifecycleState.STARTING:
                 self._state = _LifecycleState.STOPPING
                 self._connected = False
+                self._subscription_mid = None
+                self._subscription_in_progress = False
+                self._early_suback = None
                 self._state_condition.wait_for(
                     lambda: self._state is _LifecycleState.STOPPED
                 )
@@ -206,6 +244,9 @@ class GritLiveMqtt:
             self._client = None
             self._network_loop_started = False
             self._connected = False
+            self._subscription_mid = None
+            self._subscription_in_progress = False
+            self._early_suback = None
 
         if client is not None:
             self._close_client(client, loop_started)
@@ -231,6 +272,9 @@ class GritLiveMqtt:
                 self._client = None
             self._network_loop_started = False
             self._connected = False
+            self._subscription_mid = None
+            self._subscription_in_progress = False
+            self._early_suback = None
 
         if client is not None:
             self._close_client(client, loop_started)
@@ -276,6 +320,89 @@ class GritLiveMqtt:
         except Exception:  # Third-party reason-code implementations vary.
             return False
 
+    @staticmethod
+    def _subscription_message_id(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if 1 <= value <= 65_535 else None
+
+    @classmethod
+    def _suback_is_success(cls, reason_codes: Any) -> bool:
+        if isinstance(reason_codes, (list, tuple)):
+            return bool(reason_codes) and all(
+                cls._reason_code_is_success(reason_code)
+                for reason_code in reason_codes
+            )
+        return cls._reason_code_is_success(reason_codes)
+
+    def _clear_subscription_state_locked(self) -> None:
+        self._subscription_mid = None
+        self._subscription_in_progress = False
+        self._early_suback = None
+
+    def _client_is_connected(self, client: Any) -> bool:
+        with self._state_condition:
+            return (
+                self._client is client
+                and self._state in (
+                    _LifecycleState.STARTING,
+                    _LifecycleState.RUNNING,
+                )
+                and self._connected
+            )
+
+    @staticmethod
+    def _sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        sanitized: dict[str, Any] = {}
+        for key in _ALLOWED_MQTT_PAYLOAD_KEYS:
+            value = payload.get(key)
+            if isinstance(value, bool) or isinstance(value, int):
+                sanitized[key] = value
+            elif isinstance(value, float) and math.isfinite(value):
+                sanitized[key] = value
+            elif (
+                isinstance(value, str)
+                and len(value) <= MAX_MQTT_PAYLOAD_VALUE_TEXT_LENGTH
+                and value.isprintable()
+            ):
+                sanitized[key] = value
+        return sanitized
+
+    def _fail_subscription(self, client: Any) -> None:
+        with self._state_condition:
+            if self._client is not client or self._state not in (
+                _LifecycleState.STARTING,
+                _LifecycleState.RUNNING,
+            ):
+                return
+            self._clear_subscription_state_locked()
+        if self._set_connection_state(client, False):
+            _LOGGER.warning("GRIT MQTT subscription failed")
+
+    def _complete_subscription(
+        self,
+        client: Any,
+        message_id: int,
+        acknowledged: bool,
+    ) -> None:
+        with self._state_condition:
+            if (
+                self._client is not client
+                or self._state not in (
+                    _LifecycleState.STARTING,
+                    _LifecycleState.RUNNING,
+                )
+                or self._subscription_mid != message_id
+            ):
+                return
+            self._clear_subscription_state_locked()
+        if not acknowledged:
+            if self._set_connection_state(client, False):
+                _LOGGER.warning("GRIT MQTT subscription failed")
+            return
+        if self._set_connection_state(client, True):
+            _LOGGER.info("GRIT MQTT connection established")
+
     def _client_is_current(self, client: Any) -> bool:
         """Return whether a callback belongs to the active client generation."""
         with self._state_condition:
@@ -313,32 +440,86 @@ class GritLiveMqtt:
         _flags: Any,
         reason_code: Any,
     ) -> None:
-        """Subscribe after a successful initial connection or reconnect."""
+        """Subscribe without reporting readiness before a matching SUBACK."""
         success = self._reason_code_is_success(reason_code)
         if not self._client_is_current(client):
             return
         if not success:
+            with self._state_condition:
+                if self._client is client:
+                    self._clear_subscription_state_locked()
             if self._set_connection_state(client, False):
                 _LOGGER.warning("GRIT MQTT connection rejected")
             return
 
+        with self._state_condition:
+            if self._client is not client or self._state not in (
+                _LifecycleState.STARTING,
+                _LifecycleState.RUNNING,
+            ):
+                return
+            was_connected = self._connected
+            self._connected = False
+            self._clear_subscription_state_locked()
+            self._subscription_in_progress = True
+        if was_connected:
+            self._set_connection_state(client, False)
+
         try:
-            result, _message_id = client.subscribe(MQTT_TOPIC, qos=MQTT_QOS)
-        except Exception:  # Paho implementations vary.
-            if self._set_connection_state(client, False):
-                _LOGGER.warning("GRIT MQTT subscription failed")
+            result, raw_message_id = client.subscribe(
+                MQTT_TOPIC,
+                qos=MQTT_QOS,
+            )
+        except Exception:
+            self._fail_subscription(client)
             return
 
-        if not self._client_is_current(client):
-            return
-        if not self._reason_code_is_success(result):
-            if self._set_connection_state(client, False):
-                _LOGGER.warning("GRIT MQTT subscription failed")
-            return
-        if not self._set_connection_state(client, True):
+        message_id = self._subscription_message_id(raw_message_id)
+        if not self._reason_code_is_success(result) or message_id is None:
+            self._fail_subscription(client)
             return
 
-        _LOGGER.info("GRIT MQTT connection established")
+        with self._state_condition:
+            if self._client is not client or self._state not in (
+                _LifecycleState.STARTING,
+                _LifecycleState.RUNNING,
+            ):
+                return
+            self._subscription_in_progress = False
+            self._subscription_mid = message_id
+            early_suback = self._early_suback
+            self._early_suback = None
+
+        if early_suback is not None and early_suback[0] == message_id:
+            self._complete_subscription(
+                client,
+                message_id,
+                early_suback[1],
+            )
+
+    def _on_subscribe(
+        self,
+        client: Any,
+        _userdata: Any,
+        message_id: Any,
+        reason_codes: Any,
+        _properties: Any = None,
+    ) -> None:
+        """Accept only the matching successful subscription acknowledgement."""
+        normalized_mid = self._subscription_message_id(message_id)
+        if normalized_mid is None:
+            return
+        acknowledged = self._suback_is_success(reason_codes)
+        with self._state_condition:
+            if self._client is not client or self._state not in (
+                _LifecycleState.STARTING,
+                _LifecycleState.RUNNING,
+            ):
+                return
+            if self._subscription_in_progress:
+                self._early_suback = (normalized_mid, acknowledged)
+                return
+        self._complete_subscription(client, normalized_mid, acknowledged)
 
     def _on_disconnect(
         self,
@@ -348,6 +529,13 @@ class GritLiveMqtt:
     ) -> None:
         """Record broker disconnection without logging endpoint details."""
         success = self._reason_code_is_success(reason_code)
+        with self._state_condition:
+            if self._client is not client or self._state not in (
+                _LifecycleState.STARTING,
+                _LifecycleState.RUNNING,
+            ):
+                return
+            self._clear_subscription_state_locked()
         if not self._set_connection_state(client, False):
             return
         if success:
@@ -357,7 +545,7 @@ class GritLiveMqtt:
 
     def _on_message(self, client: Any, _userdata: Any, message: Any) -> None:
         """Validate and pass a decoded MQTT message to the injected callback."""
-        if not self._client_is_current(client):
+        if not self._client_is_connected(client):
             return
 
         raw_payload = getattr(message, "payload", None)
@@ -384,6 +572,12 @@ class GritLiveMqtt:
         if not isinstance(payload, dict):
             _LOGGER.warning("GRIT MQTT message rejected: expected an object")
             return
+        payload = self._sanitize_payload(payload)
+        if not payload:
+            _LOGGER.warning(
+                "GRIT MQTT message rejected: no supported payload"
+            )
+            return
 
         topic = getattr(message, "topic", None)
         if not isinstance(topic, str) or len(topic) > MAX_MQTT_TOPIC_LENGTH:
@@ -407,7 +601,7 @@ class GritLiveMqtt:
         device_id = parts[3]
         message_type = "/".join(parts[4:])
 
-        if not self._client_is_current(client):
+        if not self._client_is_connected(client):
             return
 
         try:

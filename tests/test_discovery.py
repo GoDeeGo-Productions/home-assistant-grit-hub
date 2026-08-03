@@ -53,10 +53,14 @@ class FakeMessage:
 
 class FakePahoScenario:
     def __init__(self):
+        self.messages_before_suback = []
         self.clients = []
         self.connect_reason = 0
         self.connect_result = 0
         self.subscribe_result = 0
+        self.suback_reason_codes = [0]
+        self.suback_message_id = 1
+        self.suppress_suback = False
         self.loop_result = 0
         self.messages = []
         self.connect_failure = False
@@ -78,6 +82,7 @@ class FakePahoScenario:
                 self.on_connect_fail = None
                 self.on_disconnect = None
                 self.on_message = None
+                self.on_subscribe = None
                 self.connect_calls = []
                 self.subscribe_calls = []
                 self.disconnect_calls = 0
@@ -116,12 +121,21 @@ class FakePahoScenario:
                         None,
                         scenario.connect_reason,
                     )
+                    for topic_value in scenario.messages_before_suback:
+                        self.on_message(self, None, FakeMessage(topic_value))
+                    if self.subscribe_calls and not scenario.suppress_suback:
+                        self.on_subscribe(
+                            self,
+                            None,
+                            scenario.suback_message_id,
+                            scenario.suback_reason_codes,
+                        )
+                    for topic_value in scenario.messages:
+                        self.on_message(self, None, FakeMessage(topic_value))
                 return scenario.loop_result
 
             def subscribe(self, topic, *, qos):
                 self.subscribe_calls.append((topic, qos))
-                for topic_value in scenario.messages:
-                    self.on_message(self, None, FakeMessage(topic_value))
                 return scenario.subscribe_result, 1
 
             def publish(self, *_args, **_kwargs):
@@ -241,12 +255,49 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
         )
         self.assert_stopped(client)
 
+    def test_subscribe_request_without_suback_times_out(self):
+        scenario = FakePahoScenario()
+        scenario.suppress_suback = True
+
+        result, client = self.run_probe(scenario, timeout=0.02)
+
+        self.assertFalse(result.connected)
+        self.assertEqual(client.subscribe_calls, [(f"grit/{HUB_ID}/+/+/#", 0)])
+        self.assert_stopped(client)
+
+    def test_failed_suback_fails_closed(self):
+        scenario = FakePahoScenario()
+        scenario.suback_reason_codes = [128]
+
+        result, client = self.run_probe(scenario)
+
+        self.assertFalse(result.connected)
+        self.assert_stopped(client)
+
+    def test_mismatched_suback_is_ignored_until_timeout(self):
+        scenario = FakePahoScenario()
+        scenario.suback_message_id = 2
+
+        result, client = self.run_probe(scenario, timeout=0.02)
+
+        self.assertFalse(result.connected)
+        self.assert_stopped(client)
+
     def test_matching_arriving_topic_is_accepted(self):
         scenario = FakePahoScenario()
         scenario.messages = [f"grit/{HUB_ID}/gate/device-fabricated/status"]
         result, client = self.run_probe(scenario)
         self.assertTrue(result.connected)
         self.assertEqual(result.hub_id, HUB_ID)
+        self.assert_stopped(client)
+
+    def test_message_before_matching_suback_is_not_discovery_evidence(self):
+        scenario = FakePahoScenario()
+        scenario.messages_before_suback = [
+            f"grit/{HUB_ID}/gate/device-fabricated/status"
+        ]
+        result, client = self.run_probe(scenario, expected_hub_id=None)
+        self.assertEqual(result, DISCOVERY.MqttProbeResult(True))
         self.assert_stopped(client)
 
     def test_wrong_arriving_topic_hub_is_rejected(self):
@@ -314,6 +365,7 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
         result, client = self.run_probe(scenario, timeout=0.01)
         self.assertFalse(result.connected)
         client.on_connect(client, None, None, 0)
+        client.on_subscribe(client, None, 1, [0])
         client.on_message(
             client,
             None,
@@ -336,6 +388,21 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
 
         scenario = FakePahoScenario()
         scenario.connect_reason = MalformedReason()
+        result, client = self.run_probe(scenario)
+        self.assertFalse(result.connected)
+        self.assert_stopped(client)
+
+    def test_malformed_suback_reason_never_escapes_callback(self):
+        class MalformedReason:
+            @property
+            def is_failure(self):
+                raise RuntimeError("fabricated malformed reason")
+
+            def __int__(self):
+                raise RuntimeError("fabricated malformed reason")
+
+        scenario = FakePahoScenario()
+        scenario.suback_reason_codes = [MalformedReason()]
         result, client = self.run_probe(scenario)
         self.assertFalse(result.connected)
         self.assert_stopped(client)
