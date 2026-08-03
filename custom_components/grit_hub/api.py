@@ -149,7 +149,10 @@ class GritHubApiClient:
     async def get_collection(self, device_type: str) -> list[dict[str, Any]]:
         data = await self.request("GET", f"/api/{quote(device_type)}")
         items = normalise_list(data)
-        sanitized = [sanitize_device_data(item) for item in items]
+        sanitized = [
+            sanitize_device_data(item, device_type=device_type)
+            for item in items
+        ]
         return [item for item in sanitized if item]
 
     async def request_device_telemetry(
@@ -257,7 +260,11 @@ def _bounded_device_text(value: Any) -> str | None:
     return value
 
 
-def sanitize_device_data(value: Any) -> dict[str, Any]:
+def sanitize_device_data(
+    value: Any,
+    *,
+    device_type: str | None = None,
+) -> dict[str, Any]:
     """Retain only bounded fields required by existing entities and commands."""
     if not isinstance(value, dict):
         return {}
@@ -294,6 +301,10 @@ def sanitize_device_data(value: Any) -> dict[str, Any]:
         raw = value.get(field)
         if isinstance(raw, bool):
             sanitized[field] = raw
+
+    lockout = value.get("lockout")
+    if device_type == "rfid" and isinstance(lockout, bool):
+        sanitized["lockout"] = lockout
 
     return sanitized
 

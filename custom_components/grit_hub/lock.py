@@ -52,24 +52,30 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
                 "GRITLock state could not be confirmed"
             )
         confirmation_boundary = self.coordinator.mqtt_receive_sequence
-        known_participants = (
-            self.coordinator.gritlock_participating_trigger_ids
+        generation_id = self.coordinator.begin_gritlock_generation(
+            confirmation_boundary
         )
+        if generation_id is None:
+            raise HomeAssistantError(
+                "GRITLock state could not be confirmed"
+            )
         try:
             await self.coordinator.api.set_gritlock(locked)
             confirmed = await self.coordinator.async_confirm_gritlock_state(
                 locked,
-                after_sequence=confirmation_boundary,
-                known_participants=known_participants,
+                generation_id=generation_id,
                 timeout=HUB_CONFIRM_TIMEOUT,
             )
         except asyncio.CancelledError:
+            self.coordinator.cancel_gritlock_generation(generation_id)
             raise
         except Exception as err:
+            self.coordinator.cancel_gritlock_generation(generation_id)
             raise HomeAssistantError(
                 "GRITLock state could not be confirmed"
             ) from err
         if not confirmed:
+            self.coordinator.cancel_gritlock_generation(generation_id)
             raise HomeAssistantError(
                 "GRITLock state could not be confirmed"
             )
@@ -92,8 +98,11 @@ class GritHubRfidLock(GritHubEntity, LockEntity):
 
     @property
     def is_locked(self) -> bool | None:
-        enabled = self.mqtt_state.get("state")
-        return not enabled if isinstance(enabled, bool) else None
+        locked = self.mqtt_state.get("locked")
+        if isinstance(locked, bool):
+            return locked
+        provisional = self.current_device.get("lockout")
+        return provisional if isinstance(provisional, bool) else None
 
     @property
     def extra_state_attributes(self):
@@ -112,6 +121,7 @@ class GritHubRfidLock(GritHubEntity, LockEntity):
             raise HomeAssistantError(
                 "RFID state could not be confirmed"
             )
+        expected_locked = not enabled
         confirmation_boundary = self.coordinator.mqtt_receive_sequence
         try:
             await self.coordinator.api.set_device_state(
@@ -122,7 +132,7 @@ class GritHubRfidLock(GritHubEntity, LockEntity):
             confirmed = await self.coordinator.async_confirm_device_state(
                 "rfid",
                 self._device_id,
-                enabled,
+                expected_locked,
                 after_sequence=confirmation_boundary,
                 timeout=DEVICE_CONFIRM_TIMEOUT,
             )

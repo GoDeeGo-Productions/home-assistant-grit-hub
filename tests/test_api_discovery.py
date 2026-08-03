@@ -263,6 +263,7 @@ class ApiHubTests(unittest.TestCase):
                         "id": "device-fabricated",
                         "name": "Fabricated Reader",
                         "state": False,
+                        "lockout": False,
                         "gritLockEnabled": True,
                         "gritLockState": False,
                         "users": [{"name": private_values[0]}],
@@ -282,6 +283,7 @@ class ApiHubTests(unittest.TestCase):
                     "id": "device-fabricated",
                     "name": "Fabricated Reader",
                     "state": False,
+                    "lockout": False,
                     "gritLockEnabled": True,
                     "gritLockState": False,
                 }
@@ -290,6 +292,24 @@ class ApiHubTests(unittest.TestCase):
         rendered = repr(result)
         for private in private_values:
             self.assertNotIn(private, rendered)
+
+    def test_rfid_lockout_is_strict_boolean_and_type_scoped(self):
+        for value, expected in ((True, True), (False, False), (1, None), ("false", None)):
+            with self.subTest(value=value):
+                rfid = API.sanitize_device_data(
+                    {"id": "reader-test", "lockout": value},
+                    device_type="rfid",
+                )
+                if expected is None:
+                    self.assertNotIn("lockout", rfid)
+                else:
+                    self.assertIs(rfid["lockout"], expected)
+
+        unrelated = API.sanitize_device_data(
+            {"id": "gate-test", "lockout": True},
+            device_type="gate",
+        )
+        self.assertNotIn("lockout", unrelated)
 
     def test_targeted_telemetry_refresh_uses_documented_bounded_endpoint(self):
         client = self.client()
