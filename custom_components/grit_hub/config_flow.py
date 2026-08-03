@@ -13,6 +13,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .api import GritHubApiClient, GritHubApiError
+from .auth import InvalidBearerToken, validate_bearer_token
 from .const import (
     CONF_BASE_URL,
     CONF_MQTT_HOST,
@@ -43,7 +44,7 @@ from .discovery import (
 )
 
 _MAX_BASE_URL_LENGTH = 2048
-_MAX_SECRET_LENGTH = 4096
+_MAX_MQTT_PASSWORD_LENGTH = 4096
 _CONF_SHOW_ADVANCED = "show_advanced"
 _PASSWORD_SELECTOR = selector.TextSelector(
     selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
@@ -111,23 +112,26 @@ def _boolean(
     return value
 
 
-def _secret(
+def _token(
     data: dict[str, Any],
     field: str,
     code: str,
     existing: dict[str, Any] | None,
 ) -> str:
     value = data.get(field)
-    if value is not None and not isinstance(value, str):
-        raise _InputError(field, code)
-    if isinstance(value, str) and value.strip():
-        if len(value) > _MAX_SECRET_LENGTH:
+    if value is not None and not (
+        isinstance(value, str) and not value.strip()
+    ):
+        try:
+            return validate_bearer_token(value)
+        except InvalidBearerToken:
             raise _InputError(field, code)
-        return value
     if existing is not None:
         stored = existing.get(field)
-        if isinstance(stored, str) and stored:
-            return stored
+        try:
+            return validate_bearer_token(stored)
+        except InvalidBearerToken:
+            pass
     raise _InputError(field, code)
 
 
@@ -149,7 +153,7 @@ def _password(data: dict[str, Any]) -> str | None:
     value = data.get(CONF_MQTT_PASSWORD)
     if value is None:
         return None
-    if not isinstance(value, str) or len(value) > _MAX_SECRET_LENGTH:
+    if not isinstance(value, str) or len(value) > _MAX_MQTT_PASSWORD_LENGTH:
         raise _InputError(CONF_MQTT_PASSWORD, "invalid_mqtt_password")
     return value if value.strip() else None
 
@@ -180,7 +184,7 @@ def _normalize_api_config(
         raise _InputError(CONF_BASE_URL, "invalid_base_url")
     return {
         CONF_BASE_URL: base_url,
-        CONF_TOKEN: _secret(data, CONF_TOKEN, "invalid_token", existing),
+        CONF_TOKEN: _token(data, CONF_TOKEN, "invalid_token", existing),
         CONF_VERIFY_SSL: _boolean(
             data, CONF_VERIFY_SSL, True, "invalid_verify_ssl"
         ),
@@ -302,6 +306,16 @@ def _api_schema(
     }
 
 
+def _mqtt_broker_schema(default: str | None = None) -> vol.Schema:
+    """Ask only for the broker address missing from REST discovery."""
+    host = (
+        vol.Required(CONF_MQTT_HOST, default=default)
+        if default
+        else vol.Required(CONF_MQTT_HOST)
+    )
+    return vol.Schema({host: str})
+
+
 def _advanced_schema_fields(
     defaults: dict[str, Any] | None = None,
     *,
@@ -388,6 +402,61 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._pending_api: dict[str, Any] | None = None
         self._advanced_defaults: dict[str, Any] = {}
 
+    def _show_advanced_form(
+        self,
+        errors: dict[str, str] | None = None,
+    ):
+        """Show advanced overrides without exposing pending secrets."""
+        return self.async_show_form(
+            step_id="advanced",
+            data_schema=vol.Schema(
+                _advanced_schema_fields(self._advanced_defaults)
+            ),
+            errors=errors or {},
+        )
+
+    async def _async_validate_mqtt(
+        self,
+        config: dict[str, Any],
+    ) -> bool:
+        """Require one bounded connection and exact successful subscription."""
+        username = config.get(CONF_MQTT_USERNAME)
+        password = config.get(CONF_MQTT_PASSWORD)
+        if username is None and password is None:
+            username = DEFAULT_MQTT_USERNAME
+            password = DEFAULT_MQTT_PASSWORD
+
+        cancel_event = threading.Event()
+        try:
+            probe = await self.hass.async_add_executor_job(
+                partial(
+                    passive_mqtt_discover,
+                    config[CONF_MQTT_HOST],
+                    config[CONF_MQTT_PORT],
+                    timeout=MQTT_DISCOVERY_TIMEOUT,
+                    expected_hub_id=config[CONF_MQTT_HUB_ID],
+                    username=username,
+                    password=password,
+                    use_tls=config[CONF_MQTT_USE_TLS],
+                    verify_tls=config[CONF_MQTT_VERIFY_TLS],
+                    keepalive=config[CONF_MQTT_KEEPALIVE],
+                    cancel_event=cancel_event,
+                )
+            )
+        except asyncio.CancelledError:
+            cancel_event.set()
+            raise
+        except Exception:
+            return False
+
+        try:
+            return (
+                probe.connected is True
+                and probe.hub_id == config[CONF_MQTT_HUB_ID]
+            )
+        except Exception:
+            return False
+
     async def _async_discover_installation(
         self,
         api_config: dict[str, Any],
@@ -407,36 +476,18 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_MQTT_KEEPALIVE: DEFAULT_MQTT_KEEPALIVE,
         }
 
-        probe = None
-        if rest.host is not None and rest.hub_id is not None:
-            cancel_event = threading.Event()
-            try:
-                probe = await self.hass.async_add_executor_job(
-                    partial(
-                        passive_mqtt_discover,
-                        rest.host,
-                        DEFAULT_MQTT_PORT,
-                        timeout=MQTT_DISCOVERY_TIMEOUT,
-                        expected_hub_id=rest.hub_id,
-                        username=DEFAULT_MQTT_USERNAME,
-                        password=DEFAULT_MQTT_PASSWORD,
-                        use_tls=False,
-                        verify_tls=True,
-                        keepalive=DEFAULT_MQTT_KEEPALIVE,
-                        cancel_event=cancel_event,
-                    )
-                )
-            except asyncio.CancelledError:
-                cancel_event.set()
-                raise
-            except Exception:
-                probe = None
-
         self._pending_api = api_config
         self._advanced_defaults = defaults
-        if probe is not None and probe.connected:
+
+        if rest.hub_id is None:
+            return self._show_advanced_form()
+        if rest.host is None:
+            return await self.async_step_mqtt_broker()
+        if await self._async_validate_mqtt({**api_config, **defaults}):
             return await self.async_step_confirm()
-        return await self.async_step_advanced()
+        return self._show_advanced_form(
+            {"base": "mqtt_cannot_connect"}
+        )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -482,6 +533,44 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_mqtt_broker(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ):
+        """Request only the broker address omitted by the authenticated API."""
+        if (
+            self._pending_api is None
+            or not self._advanced_defaults.get(CONF_MQTT_HUB_ID)
+        ):
+            return await self.async_step_user()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            combined = {**self._pending_api, **self._advanced_defaults}
+            combined[CONF_MQTT_HOST] = user_input.get(CONF_MQTT_HOST)
+            try:
+                normalized = _normalize_config(combined)
+            except _InputError as err:
+                errors[err.field] = err.code
+            else:
+                self._advanced_defaults[CONF_MQTT_HOST] = normalized[
+                    CONF_MQTT_HOST
+                ]
+                if await self._async_validate_mqtt(normalized):
+                    return self.async_create_entry(
+                        title="GRIT Hub",
+                        data=normalized,
+                    )
+                return self._show_advanced_form(
+                    {"base": "mqtt_cannot_connect"}
+                )
+
+        return self.async_show_form(
+            step_id="mqtt_broker",
+            data_schema=_mqtt_broker_schema(),
+            errors=errors,
+        )
+
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
     ):
@@ -519,17 +608,13 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except _InputError as err:
                 errors[err.field] = err.code
             else:
-                return self.async_create_entry(
-                    title="GRIT Hub",
-                    data=normalized,
-                )
-        return self.async_show_form(
-            step_id="advanced",
-            data_schema=vol.Schema(
-                _advanced_schema_fields(self._advanced_defaults)
-            ),
-            errors=errors,
-        )
+                if await self._async_validate_mqtt(normalized):
+                    return self.async_create_entry(
+                        title="GRIT Hub",
+                        data=normalized,
+                    )
+                errors["base"] = "mqtt_cannot_connect"
+        return self._show_advanced_form(errors)
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -568,13 +653,17 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except Exception:
                     errors["base"] = "cannot_connect"
                 else:
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        data_updates=normalized,
-                        options_updates={
-                            CONF_SCAN_INTERVAL: normalized[CONF_SCAN_INTERVAL]
-                        },
-                    )
+                    if await self._async_validate_mqtt(normalized):
+                        return self.async_update_reload_and_abort(
+                            entry,
+                            data_updates=normalized,
+                            options_updates={
+                                CONF_SCAN_INTERVAL: normalized[
+                                    CONF_SCAN_INTERVAL
+                                ]
+                            },
+                        )
+                    errors["base"] = "mqtt_cannot_connect"
 
         return self.async_show_form(
             step_id="reconfigure",

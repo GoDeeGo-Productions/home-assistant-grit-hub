@@ -204,6 +204,15 @@ class RestExtractionTests(unittest.TestCase):
                     [{"id": HUB_ID, "ipAddressEthernet": value}]
                 )
                 self.assertIsNone(result.host)
+    def test_blank_ethernet_address_retains_documented_hub_id(self):
+        result = DISCOVERY.extract_rest_mqtt_discovery(
+            [{"id": HUB_ID, "ipAddressEthernet": ""}]
+        )
+
+        self.assertEqual(result.hub_id, HUB_ID)
+        self.assertIsNone(result.host)
+        self.assertEqual(result.port, CONST.DEFAULT_MQTT_PORT)
+
 
 
 class PassiveMqttDiscoveryTests(unittest.TestCase):

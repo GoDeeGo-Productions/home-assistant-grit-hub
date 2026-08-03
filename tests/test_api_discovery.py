@@ -14,6 +14,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_ROOT = REPOSITORY_ROOT / "custom_components" / "grit_hub"
 HUB_ID = "0123456789abcdef0123456789abcdef"
 BROKER_IP = "192.0.2.44"
+FABRICATED_LEGACY_TOKEN = (
+    "eyJhbGciOiJmYWJyaWNhdGVkIn0."
+    + ("A" * 5_000)
+    + ".fabricated-signature"
+)
 
 
 def _load_api():
@@ -98,10 +103,14 @@ class ApiHubTests(unittest.TestCase):
             [
                 (
                     "GET",
-                    "/api/hub/1",
+                    "/api/hub",
                     {"timeout": API.REST_DISCOVERY_TIMEOUT},
                 )
             ],
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(
+            any(path == "/api/hub/1" for _method, path, _kwargs in calls)
         )
         self.assertEqual(
             set(result),
@@ -131,6 +140,48 @@ class ApiHubTests(unittest.TestCase):
             client.headers["Authorization"],
             "Bearer fabricated-api-token",
         )
+
+    def test_long_legacy_token_reaches_mocked_http_request_unchanged(self):
+        calls = []
+
+        class FakeResponse:
+            status = 204
+            headers = {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def text(self):
+                return ""
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                calls.append((method, url, kwargs))
+                return FakeResponse()
+
+        client = API.GritHubApiClient(
+            object(),
+            "https://api.fabricated.invalid",
+            FABRICATED_LEGACY_TOKEN,
+            True,
+        )
+        client.session = FakeSession()
+
+        result = asyncio.run(client.request("GET", "/api/hub"))
+
+        self.assertIsNone(result)
+        self.assertEqual(len(calls), 1)
+        method, url, kwargs = calls[0]
+        self.assertEqual(method, "GET")
+        self.assertEqual(url, "https://api.fabricated.invalid/api/hub")
+        self.assertEqual(
+            kwargs["headers"]["Authorization"],
+            f"Bearer {FABRICATED_LEGACY_TOKEN}",
+        )
+        self.assertNotIn(FABRICATED_LEGACY_TOKEN, url)
 
     def test_malformed_hub_values_are_not_retained(self):
         client = self.client()
@@ -177,7 +228,7 @@ class ApiHubTests(unittest.TestCase):
             asyncio.run(
                 client.request(
                     "GET",
-                    "/api/hub/1",
+                    "/api/hub",
                     timeout=API.REST_DISCOVERY_TIMEOUT,
                 )
             )
@@ -185,12 +236,12 @@ class ApiHubTests(unittest.TestCase):
         self.assertEqual(captured.exception.http_status, 401)
         self.assertEqual(
             str(captured.exception),
-            "GET /api/hub/* failed: HTTP 401",
+            "GET /api/hub failed: HTTP 401",
         )
         self.assertNotIn(private_body, repr(captured.exception))
         method, url, kwargs = calls[0]
         self.assertEqual(method, "GET")
-        self.assertEqual(url, "https://api.fabricated.invalid/api/hub/1")
+        self.assertEqual(url, "https://api.fabricated.invalid/api/hub")
         self.assertNotIn("fabricated-api-token", url)
         self.assertEqual(
             kwargs["headers"]["Authorization"],

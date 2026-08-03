@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import importlib.util
+import json
 import logging
 from pathlib import Path
 import socket
@@ -19,8 +20,14 @@ PACKAGE_NAME = "_grit_config_flow_tests"
 
 FABRICATED_BASE_URL = "https://api.config-test.invalid"
 FABRICATED_TOKEN = "fabricated-api-token"
+FABRICATED_LEGACY_TOKEN = (
+    "eyJhbGciOiJmYWJyaWNhdGVkIn0."
+    + ("A" * 5_000)
+    + ".fabricated-signature"
+)
 FABRICATED_MQTT_HOST = "192.0.2.44"
 FABRICATED_HUB_ID = "0123456789abcdef0123456789abcdef"
+FABRICATED_OTHER_HUB_ID = "fedcba9876543210fedcba9876543210"
 FABRICATED_USERNAME = "fabricated-mqtt-user"
 FABRICATED_PASSWORD = "fabricated-mqtt-password"
 
@@ -301,6 +308,12 @@ class ConfigFlowMqttTests(unittest.TestCase):
             )
             if self.probe_error is not None:
                 raise self.probe_error
+            if self.probe_result.connected:
+                return types.SimpleNamespace(
+                    connected=True,
+                    hub_id=kwargs["expected_hub_id"],
+                    ambiguous=False,
+                )
             return self.probe_result
 
         probe_patch = mock.patch.object(
@@ -368,6 +381,20 @@ class ConfigFlowMqttTests(unittest.TestCase):
         )
         flow, result = self.submit_api()
         self.assertEqual(result["step_id"], "advanced")
+        self.probe_result = types.SimpleNamespace(
+            connected=True,
+            hub_id=FABRICATED_HUB_ID,
+            ambiguous=False,
+        )
+        return flow, result
+
+    def broker_fallback(self, ethernet_address=""):
+        FakeApi.hub_values = {
+            "id": FABRICATED_HUB_ID,
+            "ipAddressEthernet": ethernet_address,
+        }
+        flow, result = self.submit_api()
+        self.assertEqual(result["step_id"], "mqtt_broker")
         return flow, result
 
     def complete_discovered(self):
@@ -403,6 +430,24 @@ class ConfigFlowMqttTests(unittest.TestCase):
         result = _run_immediate(flow.async_step_advanced(user_input))
         self.assertEqual(result["errors"], {field: code})
         self.assertEqual(flow.created_entries, [])
+
+    def test_broker_fallback_localization_is_exact_and_host_only(self):
+        translations = json.loads(
+            (
+                COMPONENT_ROOT
+                / "translations"
+                / "en.json"
+            ).read_text(encoding="utf-8")
+        )
+        step = translations["config"]["step"]["mqtt_broker"]
+
+        self.assertEqual(
+            step["description"],
+            "The GRIT Hub identity was discovered, but its local network "
+            "address was not returned by the GRIT API. Enter the GRIT Hub\u2019s "
+            "LAN hostname or IP address.",
+        )
+        self.assertEqual(set(step["data"]), {FLOW_MODULE.CONF_MQTT_HOST})
 
     def test_initial_page_contains_only_api_fields(self):
         result = _run_immediate(
@@ -470,6 +515,42 @@ class ConfigFlowMqttTests(unittest.TestCase):
         self.assertIsNone(result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD])
         self.assertNotIn(FLOW_MODULE.DEFAULT_MQTT_USERNAME, repr(result))
 
+    def test_long_legacy_token_reaches_authenticated_hub_validation(self):
+        flow, result = self.submit_api(
+            {FLOW_MODULE.CONF_TOKEN: FABRICATED_LEGACY_TOKEN}
+        )
+
+        self.assertEqual(result["step_id"], "confirm")
+        self.assertEqual(
+            FakeApi.constructor_tokens,
+            [FABRICATED_LEGACY_TOKEN],
+        )
+        self.assertEqual(FakeApi.hub_calls, 1)
+        self.assertNotIn(FABRICATED_LEGACY_TOKEN, repr(result))
+        self.assertIsNotNone(flow._pending_api)
+
+    def test_unsafe_tokens_are_rejected_before_api_construction(self):
+        invalid_tokens = (
+            "",
+            "fabricated\ncontrol",
+            "fabricated-\u20ac-header",
+            "A" * 65_537,
+        )
+        for index, token in enumerate(invalid_tokens):
+            with self.subTest(case=index):
+                flow, result = self.submit_api(
+                    {FLOW_MODULE.CONF_TOKEN: token}
+                )
+                self.assertEqual(result["step_id"], "user")
+                self.assertEqual(
+                    result["errors"],
+                    {FLOW_MODULE.CONF_TOKEN: "invalid_token"},
+                )
+                self.assertEqual(FakeApi.constructor_tokens, [])
+                self.assertEqual(FakeApi.hub_calls, 0)
+                self.assertEqual(self.probe_calls, [])
+                self.assertIsNone(flow._pending_api)
+
     def test_authenticated_hub_failure_stays_on_initial_form(self):
         FakeApi.hub_error = True
 
@@ -529,17 +610,12 @@ class ConfigFlowMqttTests(unittest.TestCase):
         self.assertEqual(confirm["step_id"], "user")
         self.assertEqual(flow.created_entries, [])
 
-    def test_missing_documented_fields_do_not_probe_api_hostname(self):
+    def test_missing_or_malformed_hub_id_uses_advanced_without_probe(self):
         cases = (
             {"ipAddressEthernet": FABRICATED_MQTT_HOST},
-            {"id": FABRICATED_HUB_ID},
             {
                 "id": "malformed",
                 "ipAddressEthernet": FABRICATED_MQTT_HOST,
-            },
-            {
-                "id": FABRICATED_HUB_ID,
-                "ipAddressEthernet": "not-an-ip",
             },
         )
         for values in cases:
@@ -549,6 +625,143 @@ class ConfigFlowMqttTests(unittest.TestCase):
                 _flow, result = self.submit_api()
                 self.assertEqual(result["step_id"], "advanced")
                 self.assertEqual(self.probe_calls, [])
+
+    def test_blank_or_invalid_ethernet_asks_only_for_broker(self):
+        for ethernet_address in ("", "not-an-ip"):
+            with self.subTest(ethernet_address=ethernet_address):
+                self.probe_calls.clear()
+                flow, result = self.broker_fallback(ethernet_address)
+                fields = _schema_fields(result["data_schema"])
+
+                self.assertEqual(set(fields), {FLOW_MODULE.CONF_MQTT_HOST})
+                self.assertEqual(
+                    flow._advanced_defaults[FLOW_MODULE.CONF_MQTT_HUB_ID],
+                    FABRICATED_HUB_ID,
+                )
+                self.assertEqual(
+                    flow._advanced_defaults[FLOW_MODULE.CONF_MQTT_PORT],
+                    FLOW_MODULE.DEFAULT_MQTT_PORT,
+                )
+                self.assertEqual(
+                    flow._advanced_defaults[FLOW_MODULE.CONF_MQTT_KEEPALIVE],
+                    FLOW_MODULE.DEFAULT_MQTT_KEEPALIVE,
+                )
+                self.assertFalse(
+                    flow._advanced_defaults[FLOW_MODULE.CONF_MQTT_USE_TLS]
+                )
+                self.assertTrue(
+                    flow._advanced_defaults[FLOW_MODULE.CONF_MQTT_VERIFY_TLS]
+                )
+                self.assertIsNone(
+                    flow._advanced_defaults[FLOW_MODULE.CONF_MQTT_USERNAME]
+                )
+                self.assertIsNone(
+                    flow._advanced_defaults[FLOW_MODULE.CONF_MQTT_PASSWORD]
+                )
+                self.assertEqual(self.probe_calls, [])
+                rendered = repr(result)
+                for private_value in (
+                    FABRICATED_TOKEN,
+                    FABRICATED_HUB_ID,
+                    FLOW_MODULE.DEFAULT_MQTT_USERNAME,
+                    FLOW_MODULE.DEFAULT_MQTT_PASSWORD,
+                ):
+                    self.assertNotIn(private_value, rendered)
+
+    def test_broker_entry_validates_defaults_and_completes_setup(self):
+        flow, _result = self.broker_fallback()
+
+        with self.assertNoLogs(level=logging.DEBUG):
+            result = _run_immediate(
+                flow.async_step_mqtt_broker(
+                    {FLOW_MODULE.CONF_MQTT_HOST: FABRICATED_MQTT_HOST}
+                )
+            )
+
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(len(self.probe_calls), 1)
+        probe = self.probe_calls[0]
+        self.assertEqual(probe["host"], FABRICATED_MQTT_HOST)
+        self.assertEqual(probe["port"], FLOW_MODULE.DEFAULT_MQTT_PORT)
+        self.assertEqual(probe["expected_hub_id"], FABRICATED_HUB_ID)
+        self.assertEqual(
+            probe["username"], FLOW_MODULE.DEFAULT_MQTT_USERNAME
+        )
+        self.assertEqual(
+            probe["password"], FLOW_MODULE.DEFAULT_MQTT_PASSWORD
+        )
+        self.assertEqual(
+            probe["timeout"], FLOW_MODULE.MQTT_DISCOVERY_TIMEOUT
+        )
+        self.assertFalse(probe["use_tls"])
+        self.assertTrue(probe["verify_tls"])
+        self.assertEqual(
+            probe["keepalive"], FLOW_MODULE.DEFAULT_MQTT_KEEPALIVE
+        )
+        self.assertEqual(
+            result["data"][FLOW_MODULE.CONF_MQTT_HUB_ID],
+            FABRICATED_HUB_ID,
+        )
+        self.assertEqual(
+            result["data"][FLOW_MODULE.CONF_MQTT_HOST],
+            FABRICATED_MQTT_HOST,
+        )
+        self.assertIsNone(
+            result["data"][FLOW_MODULE.CONF_MQTT_USERNAME]
+        )
+        self.assertIsNone(
+            result["data"][FLOW_MODULE.CONF_MQTT_PASSWORD]
+        )
+
+    def test_malformed_broker_fails_before_probe(self):
+        flow, _result = self.broker_fallback()
+        for broker in (
+            "",
+            "invalid broker",
+            "invalid/broker",
+            "h" * (FLOW_MODULE.MAX_MQTT_HOST_LENGTH + 1),
+        ):
+            with self.subTest(broker=broker):
+                result = _run_immediate(
+                    flow.async_step_mqtt_broker(
+                        {FLOW_MODULE.CONF_MQTT_HOST: broker}
+                    )
+                )
+                self.assertEqual(result["step_id"], "mqtt_broker")
+                self.assertEqual(
+                    result["errors"],
+                    {FLOW_MODULE.CONF_MQTT_HOST: "invalid_mqtt_host"},
+                )
+                self.assertEqual(self.probe_calls, [])
+                self.assertEqual(flow.created_entries, [])
+
+    def test_failed_broker_validation_is_generic_and_opens_advanced(self):
+        flow, _result = self.broker_fallback()
+        self.probe_result = types.SimpleNamespace(
+            connected=False,
+            hub_id=None,
+            ambiguous=False,
+        )
+
+        with self.assertNoLogs(level=logging.DEBUG):
+            result = _run_immediate(
+                flow.async_step_mqtt_broker(
+                    {FLOW_MODULE.CONF_MQTT_HOST: FABRICATED_MQTT_HOST}
+                )
+            )
+
+        self.assertEqual(result["step_id"], "advanced")
+        self.assertEqual(result["errors"], {"base": "mqtt_cannot_connect"})
+        self.assertEqual(flow.created_entries, [])
+        for private_value in (
+            FABRICATED_TOKEN,
+            FABRICATED_PASSWORD,
+            FABRICATED_HUB_ID,
+            FABRICATED_MQTT_HOST,
+            FLOW_MODULE.DEFAULT_MQTT_USERNAME,
+            FLOW_MODULE.DEFAULT_MQTT_PASSWORD,
+        ):
+            self.assertNotIn(private_value, repr(result["errors"]))
 
     def test_advanced_fallback_contains_no_api_or_mqtt_secret(self):
         FakeApi.hub_values = {"name": "Fabricated Hub"}
@@ -597,7 +810,7 @@ class ConfigFlowMqttTests(unittest.TestCase):
         )
         values = self.advanced_input()
         values[FLOW_MODULE.CONF_MQTT_HOST] = "override.config-test.invalid"
-        values[FLOW_MODULE.CONF_MQTT_HUB_ID] = "hub-override"
+        values[FLOW_MODULE.CONF_MQTT_HUB_ID] = FABRICATED_OTHER_HUB_ID
         values[FLOW_MODULE.CONF_MQTT_PORT] = 8883
         created = _run_immediate(flow.async_step_advanced(values))
         self.assertEqual(
@@ -606,7 +819,7 @@ class ConfigFlowMqttTests(unittest.TestCase):
         )
         self.assertEqual(
             created["data"][FLOW_MODULE.CONF_MQTT_HUB_ID],
-            "hub-override",
+            FABRICATED_OTHER_HUB_ID,
         )
         self.assertEqual(
             created["data"][FLOW_MODULE.CONF_MQTT_PORT],
@@ -821,6 +1034,38 @@ class ConfigFlowMqttTests(unittest.TestCase):
         self.assertEqual(entry.data, original_data)
         self.assertEqual(flow.updated_entries, [])
         self.assertEqual(self.probe_calls, [])
+
+    def test_reconfigure_blank_rest_address_preserves_existing_overrides(self):
+        entry = self.existing_entry()
+        override_host = "override.config-test.invalid"
+        entry.data[FLOW_MODULE.CONF_MQTT_HOST] = override_host
+        entry.data[FLOW_MODULE.CONF_MQTT_HUB_ID] = FABRICATED_OTHER_HUB_ID
+        FakeApi.hub_values = {
+            "id": FABRICATED_HUB_ID,
+            "ipAddressEthernet": "",
+        }
+
+        flow, result = self.reconfigure(
+            entry,
+            self.reconfigure_input(entry),
+        )
+
+        self.assertEqual(result["reason"], "reconfigure_successful")
+        self.assertEqual(FakeApi.hub_calls, 1)
+        self.assertEqual(len(self.probe_calls), 1)
+        self.assertEqual(self.probe_calls[0]["host"], override_host)
+        self.assertEqual(
+            self.probe_calls[0]["expected_hub_id"],
+            FABRICATED_OTHER_HUB_ID,
+        )
+        self.assertEqual(
+            entry.data[FLOW_MODULE.CONF_MQTT_HOST],
+            override_host,
+        )
+        self.assertEqual(
+            entry.data[FLOW_MODULE.CONF_MQTT_HUB_ID],
+            FABRICATED_OTHER_HUB_ID,
+        )
 
     def test_reconfigure_401_preserves_entry_and_exposes_no_secret(self):
         entry = self.existing_entry()

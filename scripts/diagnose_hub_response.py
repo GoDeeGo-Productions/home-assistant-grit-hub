@@ -3,15 +3,34 @@ from __future__ import annotations
 
 import argparse
 from getpass import getpass
+import importlib.util
 from ipaddress import ip_address
 import json
+from pathlib import Path
 import socket
 import ssl
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+from urllib.parse import urlsplit
+
+_AUTH_HELPER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "custom_components"
+    / "grit_hub"
+    / "auth.py"
+)
+_AUTH_SPEC = importlib.util.spec_from_file_location(
+    "_grit_diagnostic_auth",
+    _AUTH_HELPER_PATH,
+)
+if _AUTH_SPEC is None or _AUTH_SPEC.loader is None:
+    raise RuntimeError("GRIT authentication helper could not be loaded")
+_AUTH = importlib.util.module_from_spec(_AUTH_SPEC)
+_AUTH_SPEC.loader.exec_module(_AUTH)
+InvalidBearerToken = _AUTH.InvalidBearerToken
+bearer_authorization_value = _AUTH.bearer_authorization_value
 
 _KNOWN_WRAPPERS = ("data", "hub", "item", "result")
 _MAX_BODY_BYTES = 1_048_576
@@ -170,13 +189,15 @@ def fetch_summary(
         base_url = _validated_base_url(base_url)
     except ValueError:
         return _error_summary("invalid_base_url")
-    if not token or len(token) > 4096 or not token.isprintable():
+    try:
+        authorization = bearer_authorization_value(token)
+    except InvalidBearerToken:
         return _error_summary("invalid_token")
 
     request = Request(
-        f"{base_url}/api/hub/1",
+        f"{base_url}/api/hub",
         headers={
-            "Authorization": f"Bearer {token}",
+            "Authorization": authorization,
             "Accept": "application/json",
         },
         method="GET",
@@ -194,7 +215,10 @@ def fetch_summary(
             status = response.getcode()
             body = response.read(_MAX_BODY_BYTES + 1)
     except HTTPError as err:
-        return _error_summary("hub_request_failed", http_status=err.code)
+        category = (
+            "invalid_auth" if err.code == 401 else "hub_request_failed"
+        )
+        return _error_summary(category, http_status=err.code)
     except (TimeoutError, socket.timeout):
         return _error_summary("hub_request_timeout")
     except (URLError, ssl.SSLError, OSError):
@@ -214,7 +238,7 @@ def fetch_summary(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Fetch GET /api/hub/1 and print only allowlisted structural metadata."
+            "Fetch GET /api/hub and print only allowlisted structural metadata."
         )
     )
     parser.add_argument("--base-url", required=True)

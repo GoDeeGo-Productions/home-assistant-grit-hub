@@ -9,6 +9,7 @@ from urllib.parse import quote
 import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .auth import bearer_authorization_value, validate_bearer_token
 from .const import REST_DISCOVERY_TIMEOUT
 from .hub import normalize_hub_id, sanitize_hub_data
 
@@ -27,14 +28,14 @@ class GritHubApiClient:
     def __init__(self, hass, base_url: str, token: str, verify_ssl: bool = True) -> None:
         self.hass = hass
         self.base_url = base_url.rstrip("/")
-        self.token = token
+        self.token = validate_bearer_token(token)
         self.verify_ssl = verify_ssl
         self.session = async_get_clientsession(hass, verify_ssl=verify_ssl)
 
     @property
     def headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": bearer_authorization_value(self.token),
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
@@ -91,7 +92,7 @@ class GritHubApiClient:
         """Read the documented current-hub response and sanitize it."""
         data = await self.request(
             "GET",
-            "/api/hub/1",
+            "/api/hub",
             timeout=REST_DISCOVERY_TIMEOUT,
         )
         return sanitize_hub_data(data)

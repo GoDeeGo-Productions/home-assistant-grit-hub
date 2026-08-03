@@ -64,9 +64,11 @@ integration sends the supplied value only as an `Authorization: Bearer` header;
 it does not send an `auth_token` query parameter.
 
 An existing MQTT broker must still be reachable from Home Assistant; HACS does
-not install or provide one. Normal setup uses the documented Ethernet address
-and hub ID returned by the API, plus the v0.1.0 connection defaults described
-below. If validation fails, the installer opens the Advanced form.
+not install or provide one. Normal setup uses the hub ID and, when available,
+the Ethernet address returned by the API, plus the v0.1.0 connection defaults
+described below. When the API omits the Ethernet address, setup asks only for
+the GRIT Hub LAN hostname or IP address while retaining the discovered hub ID
+and internal defaults. Failed MQTT validation opens the Advanced form.
 
 The repository contains one narrowly authorized provisional vendor-default,
 read-only MQTT credential pair, centralized in `const.py`. It is applied only
@@ -112,24 +114,27 @@ The first page asks only for:
 Setup performs a deterministic discovery sequence:
 
 1. It validates the supplied bearer token directly against the required
-   authenticated `GET /api/hub/1` request with a short timeout. A response from
+   authenticated `GET /api/hub` request with a short timeout. A response from
    the health endpoint is not treated as proof that the token can access the
    integration API.
 2. It accepts only a valid documented 32-character hexadecimal `id` as the MQTT
    topic hub ID and a valid `ipAddressEthernet` value as the broker address.
-3. It makes one bounded connection attempt to that exact address on port 1883,
-   with TLS disabled, keepalive 60 and the provisional read-only defaults. It
-   does not fall back to the public API hostname or inspect other endpoints.
-4. It subscribes at QoS 0 only to
-   `grit/<documented-hub-id>/+/+/#`. Successful connection and subscription are
-   sufficient; discovery does not wait for a message. If a message arrives
-   during the bounded attempt, its hub segment must exactly match the REST hub
-   ID.
-5. It shows the discovered broker and hub ID for confirmation. The credential
-   defaults are not shown or stored in the flow result.
+3. If the broker address is absent or invalid, it retains the discovered hub ID
+   and asks only for the GRIT Hub LAN hostname or IP address. Port 1883, TLS off,
+   certificate verification on, keepalive 60, the REST interval and provisional
+   read-only credentials remain internal defaults.
+4. It makes one bounded connection attempt to the broker. It does not fall back
+   to the public API hostname or inspect other endpoints.
+5. It subscribes at QoS 0 only to
+   `grit/<documented-hub-id>/+/+/#`. A matching successful SUBACK is required;
+   discovery does not wait for a message. If a message arrives during the
+   bounded attempt, its hub segment must exactly match the REST hub ID.
+6. When both values came from REST, it shows the broker and hub ID for
+   confirmation. The credential defaults are not shown or copied into the
+   normal config entry.
 
-If discovery cannot confirm every required value, **Advanced MQTT settings**
-asks only then for:
+If bounded MQTT validation fails or advanced review is selected,
+**Advanced MQTT settings** asks for:
 
 - REST scan interval;
 - MQTT broker host and port;
@@ -239,11 +244,12 @@ after setup may require an integration reload before new entities appear.
 
 ## Known limitations
 
-- The API schema and supported GRIT firmware remain experimental. Discovery is
-  based on GRIT API version 1.1.1008 and uses only documented current-hub fields.
-- Automatic discovery requires a valid `id` and `ipAddressEthernet` from
-  `/api/hub/1`, plus a successful broker connection and exact subscription. It
-  performs no hostname fallback, network scan, port scan or background retry.
+- The API schema and supported GRIT firmware remain experimental. Discovery
+  uses the direct current-hub response from `/api/hub`.
+- Automatic discovery requires a valid `id` from `/api/hub`, plus a successful
+  broker connection and exact subscription. A valid `ipAddressEthernet` is used
+  automatically; otherwise the installer asks for only the missing LAN hostname
+  or IP address. It performs no network scan, port scan or background retry.
 - The bundled read-only MQTT credential defaults are provisional pending
   confirmation from GRIT's author. Installations that differ must use the
   Advanced credential overrides.
@@ -266,15 +272,16 @@ after setup may require an integration reload before new entities appear.
 - **Integration does not appear:** confirm the directory is exactly
   `/config/custom_components/grit_hub`, restart Home Assistant and refresh the
   browser.
-- **Automatic discovery opens Advanced:** confirm `/api/hub/1` returns a valid
-  hub ID and Ethernet IP, and that the broker is reachable from Home Assistant
-  at that address. Enter the required overrides; discovery deliberately does
-  not scan the local network or try another host or port.
+- **Setup asks for a broker address:** `/api/hub` returned a valid hub ID but no
+  valid Ethernet address. Enter the GRIT Hub LAN hostname or IP address; setup
+  does not scan the network.
+- **Automatic discovery opens Advanced:** the bounded broker validation failed.
+  Check the broker settings; discovery does not scan or retry in the background.
 - **Entry remains not ready:** verify both the REST API and MQTT broker are
   reachable from Home Assistant. MQTT must connect and subscribe during setup.
 - **REST connection fails:** check the API base URL, network path and
   certificate-verification setting. Use a GRIT API token accepted by
-  `GET /api/hub/1`, enter its value without a `Bearer` prefix, and do not enter
+  `GET /api/hub`, enter its value without a `Bearer` prefix, and do not enter
   an `auth_token` query parameter or browser redirect URL.
 - **MQTT connection fails:** check broker host, port, credentials, listener
   protocol, firewall rules, hub ID and TLS settings. HACS does not provide the
