@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 import math
+import time
 from typing import Any, Callable
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -64,7 +66,21 @@ _RECONCILIATION_MAX_TARGETS = 64
 _RECONCILIATION_MAX_PASSES = 2
 _RECONCILIATION_PASS_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
 _MAX_CONFIRM_TIMEOUT = REST_DISCOVERY_TIMEOUT * 6
+_GRITLOCK_SETTLE_TIME = 0.25
+_MAX_GRITLOCK_OBSERVATIONS = 64
+_MAX_MQTT_STATE_WAITERS = 64
+
 _INVALID = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _GritlockObservation:
+    """One bounded authoritative trigger /gl observation."""
+
+    participating: bool
+    locked: bool
+    receive_sequence: int
+    received_monotonic: float
 
 
 def _bounded_text(value: Any, maximum: int) -> str | None:
@@ -98,6 +114,13 @@ def _strict_bool(value: Any) -> bool | object:
         if normalized in {"false", "off", "closed", "0"}:
             return False
     return _INVALID
+
+
+def _strict_binary_bool(value: Any) -> bool | object:
+    """Accept only boolean or integer 0/1 device-state fields."""
+    if isinstance(value, bool):
+        return value
+    return bool(value) if isinstance(value, int) and value in (0, 1) else _INVALID
 
 
 def _bounded_number(value: Any, minimum: float, maximum: float) -> int | float | object:
@@ -384,12 +407,13 @@ def _payload_state(
             elif position <= 65:
                 updates["open"] = False
 
-    state_message_types = (
-        {"s", "st", "sts"} if device_type == "rfid" else {"s", "st", "gl", "gls"}
-    )
-    if (
+    if device_type == "rfid" and root_message_type in {"s", "st"}:
+        state = _first_valid(payload, ("s", "state"), _strict_bool)
+        if state is not _INVALID:
+            updates["state"] = state
+    elif (
         device_type in SWITCH_DEVICE_TYPES
-        and root_message_type in state_message_types
+        and root_message_type in {"s", "st", "gl", "gls"}
     ):
         state = _first_valid(payload, ("s", "state"), _strict_bool)
         if state is not _INVALID:
@@ -444,6 +468,10 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._refresh_sequence = 0
         self._hub_update_sequence = 0
         self._gritlock_update_sequence = 0
+        self._gritlock_observations: dict[
+            str, _GritlockObservation
+        ] = {}
+        self._gritlock_mqtt_authoritative = False
         self._reconciliation_task: asyncio.Task[None] | None = None
         self._reconcile_again = False
         self._reconciliation_enabled = True
@@ -486,13 +514,29 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def gritlock_state(self) -> bool | None:
-        """Return unanimous system-wide state from participating triggers."""
+        """Return MQTT consensus, or provisional REST startup evidence."""
+        if self._gritlock_mqtt_authoritative:
+            states = {
+                observation.locked
+                for observation in self._gritlock_observations.values()
+                if observation.participating
+            }
+            return next(iter(states)) if len(states) == 1 else None
         devices = (
             self.data.get("devices")
             if isinstance(self.data, dict)
             else None
         )
         return derive_gritlock_state(devices)
+
+    @property
+    def gritlock_participating_trigger_ids(self) -> frozenset[str]:
+        """Return the bounded currently known MQTT participation set."""
+        return frozenset(
+            trigger_id
+            for trigger_id, observation in self._gritlock_observations.items()
+            if observation.participating
+        )
 
     @property
     def refresh_sequence(self) -> int:
@@ -524,6 +568,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt_connected = connected
         if not connected:
             self.cancel_state_reconciliation()
+            self._gritlock_observations.clear()
             self._wake_mqtt_state_waiters()
         self.async_update_listeners()
         return True
@@ -570,6 +615,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await asyncio.gather(*telemetry_tasks, return_exceptions=True)
         self._telemetry_request_tasks.clear()
         self._telemetry_request_waiters.clear()
+        self._gritlock_observations.clear()
         self._wake_mqtt_state_waiters()
 
     async def _async_reconciliation_loop(self) -> None:
@@ -767,6 +813,20 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
         connection_generation = self._mqtt_connection_generation
+
+        def confirmation_result() -> bool | None:
+            observation = self._mqtt_field_observation(
+                device_type,
+                normalized_id,
+                field,
+                after_sequence,
+            )
+            if observation is expected:
+                return True
+            if device_type == "rfid" and observation is not _INVALID:
+                return False
+            return None
+
         async def request_and_wait() -> bool:
             if (
                 not self._reconciliation_enabled
@@ -783,29 +843,17 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and self._mqtt_connected
                 and self._mqtt_connection_generation == connection_generation
             ):
-                if (
-                    self._mqtt_field_observation(
-                        device_type,
-                        normalized_id,
-                        field,
-                        after_sequence,
-                    )
-                    is expected
-                ):
-                    return True
+                result = confirmation_result()
+                if result is not None:
+                    return result
+                if len(self._mqtt_state_waiters) >= _MAX_MQTT_STATE_WAITERS:
+                    return False
                 waiter = asyncio.get_running_loop().create_future()
                 self._mqtt_state_waiters.add(waiter)
                 try:
-                    if (
-                        self._mqtt_field_observation(
-                            device_type,
-                            normalized_id,
-                            field,
-                            after_sequence,
-                        )
-                        is expected
-                    ):
-                        return True
+                    result = confirmation_result()
+                    if result is not None:
+                        return result
                     await waiter
                 finally:
                     self._mqtt_state_waiters.discard(waiter)
@@ -815,6 +863,141 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return await asyncio.wait_for(request_and_wait(), timeout=timeout)
         except asyncio.TimeoutError:
             return False
+
+    async def async_confirm_gritlock_state(
+        self,
+        expected: bool,
+        *,
+        after_sequence: int,
+        known_participants: frozenset[str] | set[str],
+        timeout: float,
+    ) -> bool:
+        """Require a fresh settled authoritative trigger /gl consensus."""
+        if (
+            not isinstance(expected, bool)
+            or _local_receive_sequence(after_sequence) is _INVALID
+            or not isinstance(known_participants, (frozenset, set))
+            or len(known_participants) > _MAX_GRITLOCK_OBSERVATIONS
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= _MAX_CONFIRM_TIMEOUT
+        ):
+            return False
+        normalized_known = frozenset(
+            _normalize_identifier(trigger_id)
+            for trigger_id in known_participants
+        )
+        if None in normalized_known or len(normalized_known) != len(
+            known_participants
+        ):
+            return False
+
+        connection_generation = self._mqtt_connection_generation
+
+        def evaluate() -> tuple[bool | None, float | None]:
+            fresh = {
+                trigger_id: observation
+                for trigger_id, observation in self._gritlock_observations.items()
+                if observation.receive_sequence > after_sequence
+            }
+            participating = {
+                trigger_id: observation
+                for trigger_id, observation in fresh.items()
+                if observation.participating
+            }
+            if any(
+                observation.locked is not expected
+                for observation in participating.values()
+            ):
+                return False, None
+            if not participating:
+                return None, None
+            if normalized_known and not normalized_known.issubset(fresh):
+                return None, None
+            latest_received = max(
+                observation.received_monotonic
+                for observation in fresh.values()
+            )
+            quiet_remaining = _GRITLOCK_SETTLE_TIME - (
+                time.monotonic() - latest_received
+            )
+            if quiet_remaining > 0:
+                return None, quiet_remaining
+            return True, None
+
+        async def wait_for_consensus() -> bool:
+            while (
+                self._reconciliation_enabled
+                and self._mqtt_connected
+                and self._mqtt_connection_generation == connection_generation
+            ):
+                outcome, quiet_remaining = evaluate()
+                if outcome is not None:
+                    return outcome
+                if len(self._mqtt_state_waiters) >= _MAX_MQTT_STATE_WAITERS:
+                    return False
+                waiter = asyncio.get_running_loop().create_future()
+                self._mqtt_state_waiters.add(waiter)
+                try:
+                    outcome, quiet_remaining = evaluate()
+                    if outcome is not None:
+                        return outcome
+                    if quiet_remaining is None:
+                        await waiter
+                    else:
+                        try:
+                            await asyncio.wait_for(
+                                waiter,
+                                timeout=quiet_remaining,
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+                finally:
+                    self._mqtt_state_waiters.discard(waiter)
+            return False
+
+        try:
+            return await asyncio.wait_for(
+                wait_for_consensus(),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return False
+
+    def _apply_gritlock_observation(
+        self,
+        trigger_id: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Apply only strict bounded trigger /gl consensus fields."""
+        participating = _strict_binary_bool(payload.get("gte", _INVALID))
+        locked = _strict_binary_bool(payload.get("gls", _INVALID))
+        if participating is _INVALID or locked is _INVALID:
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: invalid GRITLock state"
+            )
+            return False
+        if (
+            trigger_id not in self._gritlock_observations
+            and len(self._gritlock_observations)
+            >= _MAX_GRITLOCK_OBSERVATIONS
+        ):
+            _LOGGER.debug(
+                "GRIT MQTT message rejected: GRITLock state limit reached"
+            )
+            return False
+
+        self._gritlock_mqtt_authoritative = True
+        self._mqtt_receive_sequence += 1
+        self._gritlock_observations[trigger_id] = _GritlockObservation(
+            participating=participating,
+            locked=locked,
+            receive_sequence=self._mqtt_receive_sequence,
+            received_monotonic=time.monotonic(),
+        )
+        self.async_update_listeners()
+        self._wake_mqtt_state_waiters()
+        return True
 
     async def _async_update_data(self) -> dict[str, Any]:
         self._refresh_sequence += 1
@@ -956,6 +1139,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "GRIT MQTT message rejected: invalid ordering metadata"
             )
             return False
+
+        if device_type == "trigger" and normalized_message_type.lower() == "gl":
+            return self._apply_gritlock_observation(
+                normalized_device_id, payload
+            )
 
         updates = _payload_state(
             device_type, normalized_message_type, payload
