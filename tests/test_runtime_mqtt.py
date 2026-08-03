@@ -51,6 +51,7 @@ class Scenario:
         self.start_state: bool | None = True
         self.start_error: Exception | None = None
         self.rest_error: Exception | None = None
+        self.reconciliation_stop_error: Exception | None = None
         self.forward_error: Exception | None = None
         self.forward_hook: Callable[[], None] | None = None
         self.forward_entered = threading.Event()
@@ -120,6 +121,8 @@ class FakeCoordinator:
         }
         self.messages: list[tuple[Any, ...]] = []
         self.message_thread_ids: list[int] = []
+        self.reconciliation_starts = 0
+        self.reconciliation_stops = 0
         hass.scenario.events.append("coordinator_construct")
         hass.scenario.coordinators.append(self)
 
@@ -143,6 +146,14 @@ class FakeCoordinator:
         )
         return True
 
+    def start_state_reconciliation(self) -> bool:
+        self.reconciliation_starts += 1
+        return True
+
+    async def async_stop_state_reconciliation(self) -> None:
+        self.reconciliation_stops += 1
+        if self.hass.scenario.reconciliation_stop_error is not None:
+            raise self.hass.scenario.reconciliation_stop_error
     async def async_request_refresh(self) -> None:
         return None
 
@@ -513,6 +524,7 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertTrue(coordinator.mqtt_connected)
+        self.assertEqual(coordinator.reconciliation_starts, 1)
         self.assertEqual(
             self.hass.config_entries.forwarded_platforms,
             [list(RUNTIME_MODULE.PLATFORMS)],
@@ -560,6 +572,7 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.scenario.coordinators), 1)
         self.assertEqual(len(self.scenario.mqtt_clients), 1)
         self.assertEqual(runtime.mqtt.start_calls, 1)
+        self.assertEqual(runtime.coordinator.reconciliation_starts, 1)
         self.assertEqual(self.hass.config_entries.forward_calls, 1)
         await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
 
@@ -647,9 +660,28 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         self.hass.loop.flush()
         self.assertTrue(coordinator.mqtt_connected)
         self.assertEqual(coordinator.listener_updates, initial_updates + 2)
+        self.assertEqual(coordinator.reconciliation_starts, 2)
         self.assertEqual(coordinator.data, original_data)
         await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
 
+    async def test_message_queued_after_disconnect_is_ignored(self) -> None:
+        entry = await self.setup_entry()
+        runtime = entry.runtime_data
+        self.hass.loop.hold_callbacks = True
+
+        runtime.mqtt.emit_connection_state(False)
+        runtime.mqtt.emit_message(
+            FABRICATED_MQTT_HUB,
+            "gate",
+            FABRICATED_DEVICE,
+            "status",
+            {"online": True},
+        )
+        self.hass.loop.flush()
+
+        self.assertFalse(runtime.coordinator.mqtt_connected)
+        self.assertEqual(runtime.coordinator.messages, [])
+        await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
     async def test_start_false_is_retryable_and_fully_cleaned(self) -> None:
         self.scenario.start_result = False
         self.scenario.start_state = None
@@ -659,6 +691,10 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         mqtt = self.scenario.mqtt_clients[0]
         self.assertTrue(mqtt.stopped)
         self.assertEqual(mqtt.stop_calls, 1)
+        self.assertEqual(
+            self.scenario.coordinators[0].reconciliation_stops,
+            1,
+        )
         self.assertIsNone(entry.runtime_data)
         self.assertEqual(self.hass.config_entries.forward_calls, 0)
         self.assertNotIn(entry.entry_id, self.hass.data.get("grit_hub", {}))
@@ -808,6 +844,7 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
             self.scenario.events.index("mqtt_stop"),
         )
         self.assertEqual(runtime.mqtt.stop_calls, 1)
+        self.assertEqual(runtime.coordinator.reconciliation_stops, 1)
         self.assertEqual(
             self.hass.config_entries.unloaded_platforms,
             [list(RUNTIME_MODULE.PLATFORMS)],
@@ -821,6 +858,21 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(entry.runtime_data)
         self.assertNotIn(entry.entry_id, self.hass.data["grit_hub"])
 
+    async def test_reconciliation_cleanup_error_still_stops_mqtt(self) -> None:
+        entry = await self.setup_entry()
+        runtime = entry.runtime_data
+        self.scenario.reconciliation_stop_error = RuntimeError(
+            "fabricated reconciliation cleanup failure"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "cleanup failure"):
+            await RUNTIME_MODULE.async_unload_entry(self.hass, entry)
+
+        self.assertEqual(runtime.coordinator.reconciliation_stops, 1)
+        self.assertEqual(runtime.mqtt.stop_calls, 1)
+        self.assertTrue(runtime.mqtt.stopped)
+        self.assertIsNone(entry.runtime_data)
+        self.assertNotIn(entry.entry_id, self.hass.data["grit_hub"])
     async def test_unload_then_reload_creates_one_replacement_runtime(self) -> None:
         entry = await self.setup_entry()
         original_runtime = entry.runtime_data

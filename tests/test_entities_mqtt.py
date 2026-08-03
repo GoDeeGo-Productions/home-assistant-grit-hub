@@ -569,6 +569,272 @@ class EntityMqttTests(unittest.TestCase):
         self.switch_device[MQTT_STATE_KEY]["state"] = "on"
         self.assertIsNone(switch.is_on)
 
+    def test_rfid_rest_startup_and_mqtt_login_logout_state(self):
+        rfid = {
+            "id": "rfid-fabricated",
+            "name": "Fabricated RFID reader",
+            "state": False,
+        }
+        self.coordinator.data["devices"]["rfid"].append(rfid)
+        entity = SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "rfid",
+            rfid,
+        )
+
+        self.assertFalse(entity.is_on)
+        rfid[MQTT_STATE_KEY] = {"state": True, "online": True}
+        self.assertTrue(entity.is_on)
+        rfid[MQTT_STATE_KEY]["state"] = False
+        self.assertFalse(entity.is_on)
+
+    def test_unknown_gate_and_rfid_state_remain_unknown(self):
+        gate = {"id": "gate-unknown", "name": "Unknown gate"}
+        rfid = {"id": "rfid-unknown", "name": "Unknown RFID reader"}
+        self.coordinator.data["devices"]["gate"] = [gate]
+        self.coordinator.data["devices"]["rfid"] = [rfid]
+
+        cover = COVER_MODULE.GritHubGateCover(
+            self.coordinator,
+            "gate",
+            gate,
+        )
+        switch = SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "rfid",
+            rfid,
+        )
+
+        self.assertIsNone(cover.current_cover_position)
+        self.assertIsNone(cover.is_closed)
+        self.assertIsNone(switch.is_on)
+
+    def test_mocked_gate_and_rfid_commands_refresh_confirmed_state(self):
+        rfid = {
+            "id": "rfid-fabricated",
+            "name": "Fabricated RFID reader",
+            "state": False,
+        }
+        self.coordinator.data["devices"]["rfid"].append(rfid)
+        cover = self.gate_cover()
+        switch = SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "rfid",
+            rfid,
+        )
+        command = mock.AsyncMock()
+
+        def confirm_gate() -> None:
+            self.gate["open"] = True
+            self.gate["position"] = 100
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ):
+            self.coordinator.refresh_hook = confirm_gate
+            self.loop.run_until_complete(cover.async_open_cover())
+            command.assert_awaited_once_with("gate", GATE_ID, True)
+            self.assertFalse(cover.is_closed)
+            self.assertEqual(cover.current_cover_position, 100)
+
+            command.reset_mock()
+            self.coordinator.refresh_hook = lambda: rfid.__setitem__(
+                "state",
+                True,
+            )
+            self.loop.run_until_complete(switch.async_turn_on())
+            command.assert_awaited_once_with(
+                "rfid",
+                "rfid-fabricated",
+                True,
+            )
+            self.assertTrue(switch.is_on)
+
+            command.reset_mock()
+            self.coordinator.refresh_hook = lambda: rfid.__setitem__(
+                "state",
+                False,
+            )
+            self.loop.run_until_complete(switch.async_turn_off())
+            command.assert_awaited_once_with(
+                "rfid",
+                "rfid-fabricated",
+                False,
+            )
+            self.assertFalse(switch.is_on)
+
+        self.assertEqual(self.coordinator.refresh_calls, 3)
+
+    def test_gate_and_rfid_commands_fail_when_state_is_unconfirmed(self):
+        rfid = {
+            "id": "rfid-fabricated",
+            "name": "Fabricated RFID reader",
+            "state": False,
+        }
+        self.coordinator.data["devices"]["rfid"].append(rfid)
+        cover = self.gate_cover()
+        switch = SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "rfid",
+            rfid,
+        )
+        command = mock.AsyncMock()
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ):
+            self.coordinator.refresh_hook = lambda: None
+            with self.assertRaisesRegex(
+                HomeAssistantError,
+                "Gate state could not be confirmed",
+            ):
+                self.loop.run_until_complete(cover.async_open_cover())
+            self.assertTrue(cover.is_closed)
+
+            command.reset_mock()
+            with self.assertRaisesRegex(
+                HomeAssistantError,
+                "Device state could not be confirmed",
+            ):
+                self.loop.run_until_complete(switch.async_turn_on())
+            self.assertFalse(switch.is_on)
+
+            command.reset_mock()
+            self.coordinator.refresh_hook = lambda: self.coordinator.data[
+                "devices"
+            ]["gate"].clear()
+            with self.assertRaisesRegex(
+                HomeAssistantError,
+                "Gate state could not be confirmed",
+            ):
+                self.loop.run_until_complete(cover.async_open_cover())
+            command.assert_awaited_once_with("gate", GATE_ID, True)
+
+    def test_non_rfid_stale_mqtt_cannot_confirm_rest_command(self):
+        switch = self.device_switch()
+        self.switch_device[MQTT_STATE_KEY] = {"state": True}
+        command = mock.AsyncMock()
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ):
+            self.coordinator.refresh_hook = lambda: None
+            with self.assertRaisesRegex(
+                HomeAssistantError,
+                "Device state could not be confirmed",
+            ):
+                self.loop.run_until_complete(switch.async_turn_on())
+
+        command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
+
+    def test_matching_stale_state_requires_new_successful_refresh(self):
+        cover = self.gate_cover()
+        switch = self.device_switch()
+        command = mock.AsyncMock()
+        no_refresh = mock.AsyncMock()
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ), mock.patch.object(
+            self.coordinator,
+            "async_request_refresh",
+            no_refresh,
+        ):
+            with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+                self.loop.run_until_complete(cover.async_close_cover())
+            with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+                self.loop.run_until_complete(switch.async_turn_off())
+
+        self.coordinator.last_update_success = False
+        self.coordinator.refresh_hook = lambda: self.gate.__setitem__("open", True)
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ):
+            with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+                self.loop.run_until_complete(cover.async_open_cover())
+
+    def test_gate_command_is_not_optimistic_while_confirmation_is_pending(self):
+        cover = self.gate_cover()
+        command = mock.AsyncMock()
+        self.coordinator.refresh_block = asyncio.Event()
+
+        def confirm_gate() -> None:
+            self.gate["open"] = True
+            self.gate["position"] = 100
+
+        self.coordinator.refresh_hook = confirm_gate
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ):
+            task = self.loop.create_task(cover.async_open_cover())
+            self.loop.run_until_complete(asyncio.sleep(0))
+            self.assertFalse(task.done())
+            self.assertTrue(cover.is_closed)
+            self.assertEqual(cover.current_cover_position, 20)
+
+            self.coordinator.refresh_block.set()
+            self.loop.run_until_complete(task)
+
+        self.assertFalse(cover.is_closed)
+        self.assertEqual(cover.current_cover_position, 100)
+
+    def test_gate_and_rfid_confirmation_timeout_is_generic(self):
+        rfid = {
+            "id": "rfid-fabricated",
+            "name": "Fabricated RFID reader",
+            "state": False,
+        }
+        self.coordinator.data["devices"]["rfid"].append(rfid)
+        cover = self.gate_cover()
+        switch = SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "rfid",
+            rfid,
+        )
+        command = mock.AsyncMock()
+        private_detail = "fabricated-private-command-detail"
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ):
+            self.coordinator.refresh_block = asyncio.Event()
+            with mock.patch.object(
+                COVER_MODULE,
+                "DEVICE_CONFIRM_TIMEOUT",
+                0.01,
+            ), self.assertRaises(HomeAssistantError) as gate_error:
+                self.loop.run_until_complete(cover.async_open_cover())
+            self.assertEqual(
+                str(gate_error.exception),
+                "Gate state could not be confirmed",
+            )
+
+            self.coordinator.refresh_block = None
+            command.side_effect = SWITCH_MODULE.GritHubApiError(
+                private_detail
+            )
+            with self.assertRaises(HomeAssistantError) as rfid_error:
+                self.loop.run_until_complete(switch.async_turn_on())
+            self.assertEqual(
+                str(rfid_error.exception),
+                "Device state could not be confirmed",
+            )
+            self.assertNotIn(private_detail, str(rfid_error.exception))
+
     def test_switch_uses_conservative_availability(self):
         self.switch_device[MQTT_STATE_KEY] = {"state": True}
         switch = self.device_switch()
@@ -858,6 +1124,7 @@ class EntityMqttTests(unittest.TestCase):
             [("restart_service",), ("reboot_hub",)],
         )
         self.assertEqual(self.coordinator.refresh_calls, 0)
+
     def test_exposed_state_and_attributes_contain_no_raw_mqtt_values(self):
         topic = "grit/private-hub/gate/private-device/status"
         payload = "fabricated-private-payload"

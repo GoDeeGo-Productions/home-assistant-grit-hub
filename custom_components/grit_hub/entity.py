@@ -50,12 +50,20 @@ class GritHubEntity(CoordinatorEntity):
         return self.coordinator.hub_data
 
     @property
-    def current_device(self) -> dict[str, Any]:
+    def current_device_observation(self) -> dict[str, Any] | None:
+        """Return only a device present in the current coordinator snapshot."""
         if not self.device_type or self._device_id == "hub":
-            return {}
+            return None
         for item in self.coordinator.data.get("devices", {}).get(self.device_type, []):
             if str(obj_id(item)) == str(self._device_id):
                 return item
+        return None
+
+    @property
+    def current_device(self) -> dict[str, Any]:
+        observed = self.current_device_observation
+        if observed is not None:
+            return observed
         return self.device
 
     @property

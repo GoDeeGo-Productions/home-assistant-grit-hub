@@ -1,13 +1,18 @@
 """Gate covers for GRIT Hub."""
 from __future__ import annotations
 
+import asyncio
 import math
 
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
 from homeassistant.exceptions import HomeAssistantError
 
 from .api import GritHubApiError, bool_state, obj_id, obj_name
-from .const import COVER_DEVICE_TYPES, DOMAIN
+from .const import (
+    COVER_DEVICE_TYPES,
+    DEVICE_CONFIRM_TIMEOUT,
+    DOMAIN,
+)
 from .entity import GritHubEntity
 
 
@@ -70,15 +75,40 @@ class GritHubGateCover(GritHubEntity, CoverEntity):
         return self.diagnostic_attributes
 
     async def async_open_cover(self, **kwargs):
-        try:
-            await self.coordinator.api.set_device_state(self.device_type, self._device_id, True)
-            await self.coordinator.async_request_refresh()
-        except GritHubApiError as err:
-            raise HomeAssistantError(str(err)) from err
+        await self._async_set_open(True)
 
     async def async_close_cover(self, **kwargs):
+        await self._async_set_open(False)
+
+    def _observed_open(self) -> bool | None:
+        observed = self.current_device_observation
+        if observed is None:
+            return None
+        mqtt_state = self.mqtt_state
+        if "open" in mqtt_state:
+            state = mqtt_state["open"]
+            return state if isinstance(state, bool) else None
+        return bool_state(observed)
+
+    async def _async_set_open(self, open_state: bool) -> None:
         try:
-            await self.coordinator.api.set_device_state(self.device_type, self._device_id, False)
-            await self.coordinator.async_request_refresh()
-        except GritHubApiError as err:
-            raise HomeAssistantError(str(err)) from err
+            await self.coordinator.api.set_device_state(
+                self.device_type,
+                self._device_id,
+                open_state,
+            )
+            confirmation_generation = self.coordinator.refresh_sequence
+            await asyncio.wait_for(
+                self.coordinator.async_request_refresh(),
+                timeout=DEVICE_CONFIRM_TIMEOUT,
+            )
+        except (GritHubApiError, asyncio.TimeoutError) as err:
+            raise HomeAssistantError(
+                "Gate state could not be confirmed"
+            ) from err
+        if (
+            not self.coordinator.last_update_success
+            or self.coordinator.refresh_sequence <= confirmation_generation
+            or self._observed_open() is not open_state
+        ):
+            raise HomeAssistantError("Gate state could not be confirmed")
