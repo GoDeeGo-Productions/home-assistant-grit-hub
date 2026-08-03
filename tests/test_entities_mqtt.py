@@ -700,11 +700,15 @@ class EntityMqttTests(unittest.TestCase):
 
         self.assertTrue(entity.is_locked)
         self.assertNotIn("lockout", entity.extra_state_attributes)
-        rfid[MQTT_STATE_KEY] = {"locked": False, "online": True}
-        self.assertFalse(entity.is_locked)
+
         rfid["lockout"] = False
-        rfid[MQTT_STATE_KEY]["locked"] = True
+        self.assertFalse(entity.is_locked)
+
+        rfid[MQTT_STATE_KEY] = {"locked": True, "online": True}
         self.assertTrue(entity.is_locked)
+        rfid["lockout"] = True
+        rfid[MQTT_STATE_KEY]["locked"] = False
+        self.assertFalse(entity.is_locked)
 
     def test_unknown_gate_and_rfid_state_remain_unknown(self):
         gate = {"id": "gate-unknown", "name": "Unknown gate"}
