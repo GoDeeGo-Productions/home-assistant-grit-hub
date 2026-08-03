@@ -402,7 +402,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                     )
                 )
 
-    def test_switch_and_rfid_message_aliases_are_bounded(self):
+    def test_rfid_status_is_diagnostic_not_controllable_state(self):
         instance = self.coordinator()
         self.assertTrue(
             self.send(
@@ -410,10 +410,22 @@ class CoordinatorMqttTests(unittest.TestCase):
                 device_type="rfid",
                 device_id="device-rfid",
                 message_type="sts",
-                payload={"s": "on"},
+                payload={
+                    "s": 0,
+                    "sts": 1,
+                    "av": "1.1.test",
+                    "rssi": -61,
+                },
             )
         )
-        self.assertTrue(self.mqtt_state(instance, "rfid")["state"])
+        state = self.mqtt_state(instance, "rfid")
+        self.assertNotIn("state", state)
+        self.assertTrue(state["online"])
+        self.assertEqual(state["firmware_version"], "1.1.test")
+        self.assertEqual(state["rssi"], -61)
+
+    def test_switch_message_aliases_are_bounded(self):
+        instance = self.coordinator()
         self.assertTrue(
             self.send(
                 instance,
@@ -425,8 +437,8 @@ class CoordinatorMqttTests(unittest.TestCase):
         )
         self.assertFalse(self.mqtt_state(instance, "solenoid")["state"])
 
-    def test_rfid_login_logout_topics_apply_in_source_order(self):
-        for message_type in ("s", "st", "sts"):
+    def test_rfid_authoritative_state_topics_apply_in_source_order(self):
+        for message_type in ("s", "st"):
             with self.subTest(message_type=message_type):
                 instance = self.coordinator()
                 self.assertTrue(
@@ -449,6 +461,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                     )
                 )
                 self.assertFalse(self.mqtt_state(instance, "rfid")["state"])
+
     def test_rssi_range_is_enforced(self):
         instance = self.coordinator()
         self.assertTrue(self.send(instance, payload={"rssi": -62}))
@@ -798,6 +811,206 @@ class CoordinatorMqttTests(unittest.TestCase):
                 instance = self.coordinator(devices=devices)
                 self.assertIs(instance.gritlock_state, expected)
 
+    def test_gritlock_mqtt_consensus_uses_only_exact_participating_gl(self):
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one"},
+            {"id": "trigger-two"},
+        ]
+        instance = self.coordinator(devices=devices)
+
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id="trigger-one",
+                message_type="gl",
+                payload={"gte": 0, "gls": 1},
+            )
+        )
+        self.assertIsNone(instance.gritlock_state)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset(),
+        )
+
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id="trigger-one",
+                message_type="gl",
+                payload={"gte": 1, "gls": 1},
+            )
+        )
+        self.assertTrue(instance.gritlock_state)
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id="trigger-two",
+                message_type="gl",
+                payload={"gte": 0, "gls": 0},
+            )
+        )
+        self.assertTrue(instance.gritlock_state)
+
+        self.assertFalse(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id="trigger-two",
+                message_type="gl-d",
+                payload={"gte": 1, "gls": 0},
+            )
+        )
+        self.assertTrue(instance.gritlock_state)
+
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id="trigger-two",
+                message_type="gl",
+                payload={"gte": 1, "gls": 0},
+            )
+        )
+        self.assertIsNone(instance.gritlock_state)
+
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id="trigger-one",
+                message_type="gl",
+                payload={"gte": 1, "gls": 0},
+            )
+        )
+        self.assertFalse(instance.gritlock_state)
+
+    def test_gritlock_malformed_fields_are_rejected(self):
+        values = (
+            {"gte": "1", "gls": 1},
+            {"gte": 1, "gls": "0"},
+            {"gte": 2, "gls": 1},
+            {"gte": 1, "gls": -1},
+            {"gte": True},
+            {"gls": False},
+        )
+        for payload in values:
+            with self.subTest(payload=payload):
+                devices = _device_map()
+                devices["trigger"] = [{"id": "trigger-one"}]
+                instance = self.coordinator(devices=devices)
+                self.assertFalse(
+                    self.send(
+                        instance,
+                        device_type="trigger",
+                        device_id="trigger-one",
+                        message_type="gl",
+                        payload=payload,
+                    )
+                )
+                self.assertIsNone(instance.gritlock_state)
+                self.assertEqual(instance._gritlock_observations, {})
+
+    def test_gritlock_rejection_log_is_generic(self):
+        devices = _device_map()
+        devices["trigger"] = [{"id": "trigger-private-test"}]
+        instance = self.coordinator(devices=devices)
+        payload_marker = "fabricated-private-gritlock-value"
+
+        with self.assertLogs(
+            coordinator_module._LOGGER.name,
+            level=logging.DEBUG,
+        ) as captured:
+            self.assertFalse(
+                self.send(
+                    instance,
+                    device_type="trigger",
+                    device_id="trigger-private-test",
+                    message_type="gl",
+                    payload={"gte": payload_marker, "gls": 1},
+                )
+            )
+
+        combined = "\n".join(captured.output)
+        self.assertIn("message rejected", combined)
+        for sensitive in (
+            "hub-expected",
+            "trigger-private-test",
+            payload_marker,
+        ):
+            self.assertNotIn(sensitive, combined)
+
+
+    def test_gritlock_observation_memory_is_bounded(self):
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": f"trigger-{index}"}
+            for index in range(
+                coordinator_module._MAX_GRITLOCK_OBSERVATIONS + 1
+            )
+        ]
+        instance = self.coordinator(devices=devices)
+
+        for index in range(coordinator_module._MAX_GRITLOCK_OBSERVATIONS):
+            self.assertTrue(
+                self.send(
+                    instance,
+                    device_type="trigger",
+                    device_id=f"trigger-{index}",
+                    message_type="gl",
+                    payload={"gte": 1, "gls": 1},
+                )
+            )
+        self.assertFalse(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id=(
+                    f"trigger-{coordinator_module._MAX_GRITLOCK_OBSERVATIONS}"
+                ),
+                message_type="gl",
+                payload={"gte": 1, "gls": 1},
+            )
+        )
+        self.assertEqual(
+            len(instance._gritlock_observations),
+            coordinator_module._MAX_GRITLOCK_OBSERVATIONS,
+        )
+
+
+    def test_gritlock_mqtt_evidence_supersedes_rest_until_new_mqtt(self):
+        devices = _device_map()
+        devices["trigger"] = [
+            {
+                "id": "trigger-one",
+                "gritLockEnabled": True,
+                "gritLockState": False,
+            }
+        ]
+        instance = self.coordinator(devices=devices)
+        self.assertFalse(instance.gritlock_state)
+
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id="trigger-one",
+                message_type="gl",
+                payload={"gte": True, "gls": True},
+            )
+        )
+        self.assertTrue(instance.gritlock_state)
+        listener_updates = instance.listener_updates
+
+        instance.set_mqtt_connected(True)
+        instance.set_mqtt_connected(False)
+        self.assertIsNone(instance.gritlock_state)
+        self.assertGreaterEqual(instance.listener_updates, listener_updates)
+
+
     def test_rest_refresh_re_sanitizes_preserved_state(self):
         devices = _device_map()
         devices["gate"][0][coordinator_module.MQTT_STATE_KEY] = {
@@ -1096,7 +1309,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "rfid",
                 "device-rfid",
-                "sts",
+                "st",
                 {"state": True},
             )
         )
@@ -1135,7 +1348,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "rfid",
                 "device-rfid",
-                "sts",
+                "st",
                 {"state": True},
             )
         )
@@ -1178,7 +1391,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "rfid",
                 "device-rfid",
-                "sts",
+                "st",
                 {"state": True},
             )
         )
@@ -1295,7 +1508,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "rfid",
                 "device-rfid",
-                "sts",
+                "st",
                 {"state": True},
             )
         )
@@ -1341,7 +1554,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "gate",
                 "device-gate",
-                "sts",
+                "st",
                 {"state": True},
             )
         )
@@ -1359,7 +1572,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "rfid",
                 "device-rfid",
-                "sts",
+                "st",
                 {"state": True},
             )
         )
@@ -1410,7 +1623,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "gate",
                 "device-gate",
-                "sts",
+                "st",
                 {"state": True},
             )
         )
@@ -1498,7 +1711,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "hub-expected",
                 "rfid",
                 "device-rfid",
-                "sts",
+                "st",
                 {"state": True, "seq": 8},
             )
         )
@@ -1773,6 +1986,269 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("device-gate", combined)
         self.assertNotIn("device-rfid", combined)
         self.assertEqual(api.telemetry_calls, calls_after_failure)
+
+    async def test_gritlock_confirmation_requires_fresh_settled_consensus(self):
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one"},
+            {"id": "trigger-two"},
+        ]
+        instance = self.coordinator(FakeApi(), devices)
+        instance.set_mqtt_connected(True)
+        for trigger_id in ("trigger-one", "trigger-two"):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    trigger_id,
+                    "gl",
+                    {"gte": 1, "gls": 0},
+                )
+            )
+        known = instance.gritlock_participating_trigger_ids
+
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_SETTLE_TIME",
+            0.005,
+        ):
+            boundary = instance.mqtt_receive_sequence
+            locked = asyncio.create_task(
+                instance.async_confirm_gritlock_state(
+                    True,
+                    after_sequence=boundary,
+                    known_participants=known,
+                    timeout=0.1,
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-one",
+                    "gl",
+                    {"gte": 1, "gls": 1},
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertFalse(locked.done())
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-two",
+                    "gl",
+                    {"gte": 1, "gls": 1},
+                )
+            )
+            self.assertTrue(await asyncio.wait_for(locked, timeout=1))
+
+            boundary = instance.mqtt_receive_sequence
+            unlocked = asyncio.create_task(
+                instance.async_confirm_gritlock_state(
+                    False,
+                    after_sequence=boundary,
+                    known_participants=known,
+                    timeout=0.1,
+                )
+            )
+            await asyncio.sleep(0)
+            for trigger_id in ("trigger-one", "trigger-two"):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "gl",
+                        {"gte": 1, "gls": 0},
+                    )
+                )
+            self.assertTrue(await asyncio.wait_for(unlocked, timeout=1))
+
+    async def test_gritlock_first_match_waits_and_contradiction_fails(self):
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one"},
+            {"id": "trigger-two"},
+        ]
+        instance = self.coordinator(FakeApi(), devices)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_SETTLE_TIME",
+            0.05,
+        ):
+            confirmation = asyncio.create_task(
+                instance.async_confirm_gritlock_state(
+                    True,
+                    after_sequence=instance.mqtt_receive_sequence,
+                    known_participants=frozenset(),
+                    timeout=0.2,
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-one",
+                    "gl",
+                    {"gte": 1, "gls": 1},
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertFalse(confirmation.done())
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-two",
+                    "gl",
+                    {"gte": 1, "gls": 0},
+                )
+            )
+            self.assertFalse(
+                await asyncio.wait_for(confirmation, timeout=1)
+            )
+
+    async def test_gritlock_stale_state_and_timeout_fail_closed(self):
+        devices = _device_map()
+        devices["trigger"] = [{"id": "trigger-one"}]
+        instance = self.coordinator(FakeApi(), devices)
+        instance.set_mqtt_connected(True)
+        self.assertTrue(
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "trigger",
+                "trigger-one",
+                "gl",
+                {"gte": 1, "gls": 1},
+            )
+        )
+
+        self.assertFalse(
+            await instance.async_confirm_gritlock_state(
+                True,
+                after_sequence=instance.mqtt_receive_sequence,
+                known_participants=frozenset({"trigger-one"}),
+                timeout=0.01,
+            )
+        )
+        self.assertEqual(instance._mqtt_state_waiters, set())
+
+    async def test_rfid_stale_match_and_fresh_contradiction_fail_confirmation(self):
+        instance = self.coordinator(FakeApi())
+        instance.set_mqtt_connected(True)
+        self.assertTrue(
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "rfid",
+                "device-rfid",
+                "st",
+                {"state": True},
+            )
+        )
+        boundary = instance.mqtt_receive_sequence
+        self.assertFalse(
+            await instance.async_confirm_device_state(
+                "rfid",
+                "device-rfid",
+                True,
+                after_sequence=boundary,
+                timeout=0.01,
+            )
+        )
+
+        boundary = instance.mqtt_receive_sequence
+        confirmation = asyncio.create_task(
+            instance.async_confirm_device_state(
+                "rfid",
+                "device-rfid",
+                True,
+                after_sequence=boundary,
+                timeout=0.1,
+            )
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.assertTrue(
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "rfid",
+                "device-rfid",
+                "st",
+                {"state": False},
+            )
+        )
+        self.assertFalse(await asyncio.wait_for(confirmation, timeout=1))
+        self.assertEqual(instance._mqtt_state_waiters, set())
+
+    async def test_gritlock_stop_and_cancellation_release_waiters(self):
+        devices = _device_map()
+        devices["trigger"] = [{"id": "trigger-one"}]
+        instance = self.coordinator(FakeApi(), devices)
+        instance.set_mqtt_connected(True)
+
+        stopped = asyncio.create_task(
+            instance.async_confirm_gritlock_state(
+                True,
+                after_sequence=instance.mqtt_receive_sequence,
+                known_participants=frozenset(),
+                timeout=0.2,
+            )
+        )
+        await asyncio.sleep(0)
+        await instance.async_stop_state_reconciliation()
+        self.assertFalse(await asyncio.wait_for(stopped, timeout=1))
+        self.assertEqual(instance._mqtt_state_waiters, set())
+
+        replacement = self.coordinator(FakeApi(), devices)
+        replacement.set_mqtt_connected(True)
+        cancelled = asyncio.create_task(
+            replacement.async_confirm_gritlock_state(
+                True,
+                after_sequence=replacement.mqtt_receive_sequence,
+                known_participants=frozenset(),
+                timeout=0.2,
+            )
+        )
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await cancelled
+        self.assertEqual(replacement._mqtt_state_waiters, set())
+
+    async def test_mqtt_state_waiter_collection_is_bounded(self):
+        devices = _device_map()
+        devices["trigger"] = [{"id": "trigger-one"}]
+        instance = self.coordinator(FakeApi(), devices)
+        instance.set_mqtt_connected(True)
+        loop = asyncio.get_running_loop()
+        existing = {
+            loop.create_future()
+            for _ in range(coordinator_module._MAX_MQTT_STATE_WAITERS)
+        }
+        instance._mqtt_state_waiters.update(existing)
+
+        try:
+            self.assertFalse(
+                await instance.async_confirm_gritlock_state(
+                    True,
+                    after_sequence=instance.mqtt_receive_sequence,
+                    known_participants=frozenset(),
+                    timeout=0.1,
+                )
+            )
+            self.assertEqual(
+                len(instance._mqtt_state_waiters),
+                coordinator_module._MAX_MQTT_STATE_WAITERS,
+            )
+        finally:
+            for waiter in existing:
+                waiter.cancel()
+            instance._mqtt_state_waiters.clear()
 
     async def test_normal_polling_does_not_request_mesh_telemetry(self):
         api = FakeApi(

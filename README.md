@@ -46,7 +46,7 @@ MQTT broker. Broker access must already exist. The GRIT API token and MQTT
 credentials are separate and may differ.
 
 The MQTT client only subscribes. It never publishes MQTT messages or commands.
-All gate, cover, switch, locate and device-command operations use the REST API.
+All gate, cover, lock, switch, locate and device-command operations use the REST API.
 No MQTT payload, complete topic, broker address, credentials, hub ID or device
 ID is retained in entity attributes or intentionally written to logs.
 
@@ -182,6 +182,7 @@ valid certificate or an appropriately trusted private certificate authority.
 The integration creates a single GRIT Hub device with:
 
 - the system-wide **GRITLock** lock entity;
+- one lock entity for each RFID reader;
 - REST/integration, internet and MQTT connectivity binary sensors;
 - IP address, software version, software branch, status and device-count
   diagnostics;
@@ -192,11 +193,18 @@ The integration creates a single GRIT Hub device with:
 - a Hub reboot button that is disabled by default.
 
 Discovered equipment retains the existing per-device diagnostics, switches,
-covers, refresh buttons and locate buttons. Gate and switch commands require a
-bounded refreshed observation matching the requested state before they are
-reported as confirmed. MQTT remains subscribe-only; all commands use explicit
-REST methods. A GRITLock or LED request is not reported as confirmed merely
-because its HTTP request completed.
+covers, locks, refresh buttons and locate buttons. Gate and RFID commands
+require a fresh matching authoritative MQTT observation after the REST command.
+GRITLock commands require a fresh settled MQTT consensus from participating
+triggers. Other switch commands use the existing bounded REST refresh
+confirmation. MQTT remains subscribe-only; all commands use explicit REST
+methods. A GRITLock or LED request is not reported as confirmed merely because
+its HTTP request completed.
+
+Pre-release development builds exposed RFID readers as switches. They are now
+locks so that Locked means disabled and Unlocked means enabled. The temporary
+RFID switch entities are no longer created; development installations may need
+to remove any orphaned switch registry entries after upgrading.
 
 The bounded `grit_hub.device_command`, `grit_hub.refresh_device` and
 `grit_hub.locate_device` services also remain. Services, buttons, locks, covers
@@ -206,14 +214,14 @@ button, raw MQTT control, backup/restore control, SSH control or tunnel control.
 
 ## State, availability and reconciliation
 
-REST polling remains the authoritative discovery and reconciliation mechanism.
-Validated MQTT messages can update known devices immediately. At each REST
-refresh boundary, an older gate or RFID live value cannot mask the refreshed
-REST value, while a validated MQTT update received during that refresh is
-preserved. Once a source sequence or timestamp has established ordering for a
-state category, an update without comparable ordering metadata is rejected.
-When neither REST nor MQTT has supplied a validated current value, the entity
-reports unknown instead of inferring a state.
+REST remains authoritative for discovery, static configuration and issuing
+commands. Sanitized MQTT is authoritative for live gate position, RFID reader
+enabled state and system-wide GRITLock consensus. REST polling preserves those
+live MQTT observations and cannot overwrite them. Once a source sequence or
+timestamp has established ordering for a state category, an update without
+comparable ordering metadata is rejected. Before authoritative live telemetry
+arrives, gate and RFID state remains unknown instead of being inferred from
+unproven REST or general status fields.
 
 After the first successful MQTT subscription and each reconnect, the coordinator
 makes bounded targeted requests for uniquely identified gates and RFID readers
@@ -227,14 +235,15 @@ a device to report current telemetry; it does not set state, publish MQTT, scan
 the network or command equipment. Duplicate requests are coalesced, and unload
 or disconnection cancels the active pass.
 
-Covers and switches are available only when the last REST update succeeded, the
-MQTT subscription is connected, and the device has not explicitly reported
-itself offline. If the broker connection is lost, live covers and switches
-become unavailable but retain their last known state. Reconnection and a
-successful subscription restore broker availability and request fresh gate and
-RFID telemetry. The always-available MQTT connection diagnostic shows the
-broker state. RFID switch state represents only the existing reader login/logout
-state; the integration does not discover or retain individual signed-in users.
+Covers, RFID locks and switches are available only when the last REST update
+succeeded, the MQTT subscription is connected, and the device has not
+explicitly reported itself offline. If the broker connection is lost, live
+covers and RFID locks become unavailable but retain their last known device
+state. Reconnection and a successful subscription restore broker availability
+and request fresh gate and RFID telemetry. The always-available MQTT connection
+diagnostic shows the broker state. RFID lock state represents only the reader's
+enabled or disabled state; the integration does not discover or retain
+individual signed-in users.
 
 The integration does not currently implement per-device MQTT staleness timers.
 A device that stops publishing without reporting offline may therefore retain

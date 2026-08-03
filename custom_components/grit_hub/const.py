@@ -62,7 +62,7 @@ DEVICE_TYPES = [
     "xtndr",
 ]
 
-SWITCH_DEVICE_TYPES = ["rfid", "solenoid", "latch", "collector", "powerbank"]
+SWITCH_DEVICE_TYPES = ["solenoid", "latch", "collector", "powerbank"]
 COVER_DEVICE_TYPES = ["gate"]
 SENSOR_DEVICE_TYPES = ["airquality", "presence", "pressure", "dustbin", "magswipe", "scanner", "trigger", "xtndr"]
 
