@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 
 from homeassistant.components.lock import LockEntity
 from homeassistant.exceptions import HomeAssistantError
@@ -14,11 +15,23 @@ from .entity import GritHubEntity
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     entities = [GritHubSystemLock(coordinator)]
-    for device in coordinator.data.get("devices", {}).get("rfid", []):
-        if obj_id(device) is not None:
-            entities.append(
-                GritHubRfidLock(coordinator, "rfid", device)
-            )
+    readers = coordinator.data.get("devices", {}).get("rfid", [])
+    identifiers = [
+        str(device.get("id")).strip()
+        if isinstance(device, dict)
+        and not isinstance(device.get("id"), bool)
+        and isinstance(device.get("id"), (str, int))
+        else None
+        for device in readers
+    ]
+    counts = Counter(
+        identifier
+        for identifier in identifiers
+        if identifier and len(identifier) <= 128 and identifier.isprintable()
+    )
+    for device, identifier in zip(readers, identifiers):
+        if identifier and counts[identifier] == 1:
+            entities.append(GritHubRfidLock(coordinator, "rfid", device))
     async_add_entities(entities)
 
 
@@ -82,7 +95,7 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
 
 
 class GritHubRfidLock(GritHubEntity, LockEntity):
-    """RFID reader lock state confirmed only by authoritative MQTT state."""
+    """RFID reader lock state from its individual REST response."""
 
     _attr_icon = "mdi:card-account-details"
 
@@ -94,15 +107,13 @@ class GritHubRfidLock(GritHubEntity, LockEntity):
 
     @property
     def available(self) -> bool:
-        return self.live_available
+        online = self.current_device.get("onlineStatus")
+        return self.coordinator.last_update_success and online is not False
 
     @property
     def is_locked(self) -> bool | None:
-        locked = self.mqtt_state.get("locked")
-        if isinstance(locked, bool):
-            return locked
-        provisional = self.current_device.get("lockout")
-        return provisional if isinstance(provisional, bool) else None
+        enabled = self.coordinator.rfid_enabled(self._device_id)
+        return not enabled if isinstance(enabled, bool) else None
 
     @property
     def extra_state_attributes(self):
@@ -117,23 +128,19 @@ class GritHubRfidLock(GritHubEntity, LockEntity):
         await self._async_set_enabled(True)
 
     async def _async_set_enabled(self, enabled: bool) -> None:
-        if not self.coordinator.mqtt_connected:
-            raise HomeAssistantError(
-                "RFID state could not be confirmed"
-            )
-        expected_locked = not enabled
-        confirmation_boundary = self.coordinator.mqtt_receive_sequence
+        confirmation_boundary = self.coordinator.rfid_state_generation(
+            self._device_id
+        )
         try:
             await self.coordinator.api.set_device_state(
                 "rfid",
                 self._device_id,
                 enabled,
             )
-            confirmed = await self.coordinator.async_confirm_device_state(
-                "rfid",
+            confirmed = await self.coordinator.async_confirm_rfid_state(
                 self._device_id,
-                expected_locked,
-                after_sequence=confirmation_boundary,
+                enabled,
+                after_generation=confirmation_boundary,
                 timeout=DEVICE_CONFIRM_TIMEOUT,
             )
         except asyncio.CancelledError:

@@ -193,13 +193,14 @@ The integration creates a single GRIT Hub device with:
 - a Hub reboot button that is disabled by default.
 
 Discovered equipment retains the existing per-device diagnostics, switches,
-covers, locks, refresh buttons and locate buttons. Gate and RFID commands
-require a fresh matching authoritative MQTT observation after the REST command.
+covers, locks, refresh buttons and locate buttons. Gate commands require a fresh
+matching authoritative MQTT observation after the REST command. RFID commands
+require a newer matching strict `state` value from a fresh individual REST read.
 GRITLock commands require a fresh settled MQTT consensus from participating
 triggers. Other switch commands use the existing bounded REST refresh
 confirmation. MQTT remains subscribe-only; all commands use explicit REST
-methods. A GRITLock or LED request is not reported as confirmed merely because
-its HTTP request completed.
+methods. A GRITLock, RFID or LED request is not reported as confirmed merely
+because its HTTP request completed.
 
 Pre-release development builds exposed RFID readers as switches. They are now
 locks so that Locked means disabled and Unlocked means enabled. The temporary
@@ -215,18 +216,16 @@ button, raw MQTT control, backup/restore control, SSH control or tunnel control.
 ## State, availability and reconciliation
 
 REST remains authoritative for discovery, static configuration and issuing
-commands. Sanitized MQTT is authoritative for live gate position, RFID reader
-lock state and system-wide GRITLock consensus. RFID `sts.s` is interpreted only
-for RFID readers as enabled state: `0` is locked/disabled and `1` is
-unlocked/enabled. Proven
-RFID `s` and `st` messages remain supported with their explicit enabled-state
-semantics. A strict boolean REST `lockout` value is provisional startup evidence
-only; the first accepted RFID MQTT lock observation supersedes it. REST polling
-preserves live MQTT observations and cannot overwrite them. Once a source
-sequence or timestamp has established ordering for a state category, an update
-without comparable ordering metadata is rejected. Gate state remains Unknown
-until authoritative live telemetry arrives, and RFID state remains Unknown when
-neither strict provisional REST evidence nor authoritative MQTT evidence exists.
+commands. Sanitized MQTT is authoritative for live gate position and
+system-wide GRITLock consensus. An RFID reader's current enabled state comes
+only from the strict top-level boolean `state` returned by
+`GET /api/rfid/{id}`: `true` is enabled/unlocked and `false` is
+disabled/locked. The RFID collection response and its `lockout` field are not
+used as lock state. RFID MQTT `sts` messages may update only bounded diagnostics
+such as online status, firmware and RSSI; their `s` value does not determine the
+lock entity state. Gate state remains Unknown until authoritative live MQTT
+telemetry arrives. RFID state remains Unknown until an individual REST read
+returns a valid matching identity and strict boolean state.
 
 GRITLock uses provisional REST consensus until an exact trigger `/gl` burst has
 settled. Each bounded MQTT generation retains at most the newest observation for
@@ -238,26 +237,31 @@ settled generation publishes Unknown. Disconnect discards MQTT generations and
 returns to valid provisional REST consensus where available.
 
 After the first successful MQTT subscription and each reconnect, the coordinator
-makes bounded targeted requests for uniquely identified gates and RFID readers
-through the documented
+makes bounded targeted telemetry requests for uniquely identified gates and RFID
+readers through the documented
 `POST /api/device/mesh-telemetry/refresh/{type}/{id}` endpoint. Each request uses
 the existing five-second REST timeout, at most four run concurrently, and the
-whole pass has fixed target, duration and repeat limits. Normal REST polling does
-not generate additional telemetry requests because its documented merged-state
-response is itself the periodic reconciliation source. The targeted request asks
-a device to report current telemetry; it does not set state, publish MQTT, scan
-the network or command equipment. Duplicate requests are coalesced, and unload
-or disconnection cancels the active pass.
+whole pass has fixed target, duration and repeat limits. The targeted request
+asks a device to report current telemetry; it does not set state, publish MQTT,
+scan the network or command equipment. Duplicate requests are coalesced, and
+unload or disconnection cancels the active pass.
 
-Covers, RFID locks and switches are available only when the last REST update
-succeeded, the MQTT subscription is connected, and the device has not
-explicitly reported itself offline. If the broker connection is lost, live
-covers and RFID locks become unavailable but retain their last known device
-state. Reconnection and a successful subscription restore broker availability
-and request fresh gate and RFID telemetry. The always-available MQTT connection
-diagnostic shows the broker state. RFID lock state represents only the reader's
-enabled or disabled state; the integration does not discover or retain
-individual signed-in users.
+Every normal coordinator refresh separately reads at most 64 uniquely identified
+RFID readers through `GET /api/rfid/{id}`, with no more than four concurrent
+reads and a bounded batch timeout. One failed read does not fail the integration;
+the last valid state is retained for that exact reader, or remains Unknown if no
+valid state has been observed. Unload cancels outstanding individual reads.
+
+Covers and switches are available only when the last REST update succeeded, the
+MQTT subscription is connected, and the device has not explicitly reported
+itself offline. RFID locks do not depend on the MQTT connection; they are
+unavailable when the last REST update failed or `onlineStatus` is explicitly
+false. An offline RFID reader may retain its last valid state internally but is
+reported unavailable. Reconnection and a successful subscription restore broker
+availability and request fresh gate and RFID diagnostics. The always-available
+MQTT connection diagnostic shows the broker state. RFID lock state represents
+only the reader's enabled or disabled state; the integration does not discover
+or retain individual signed-in users.
 
 The integration does not currently implement per-device MQTT staleness timers.
 A device that stops publishing without reporting offline may therefore retain

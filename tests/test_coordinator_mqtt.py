@@ -122,6 +122,15 @@ class FakeApi:
         self.hub_error = False
         self.hub_calls = 0
         self.collection_errors: set[str] = set()
+        self.rfid_details: dict[str, dict | list[dict]] = {}
+        self.rfid_detail_calls: list[str] = []
+        self.rfid_detail_errors: set[str] = set()
+        self.rfid_detail_unexpected_errors: set[str] = set()
+        self.rfid_detail_entered: asyncio.Event | None = None
+        self.rfid_detail_release: asyncio.Event | None = None
+        self.rfid_detail_active = 0
+        self.rfid_detail_max_active = 0
+        self.rfid_detail_cancelled = 0
         self.telemetry_calls: list[tuple[str, str]] = []
         self.telemetry_errors: set[tuple[str, str]] = set()
         self.telemetry_unexpected_errors: set[tuple[str, str]] = set()
@@ -148,6 +157,42 @@ class FakeApi:
                 "fabricated collection request failure"
             )
         return deepcopy(self.collections.get(device_type, []))
+
+    async def get_rfid_device(self, device_id):
+        target = str(device_id)
+        self.rfid_detail_calls.append(target)
+        self.rfid_detail_active += 1
+        self.rfid_detail_max_active = max(
+            self.rfid_detail_max_active,
+            self.rfid_detail_active,
+        )
+        try:
+            if self.rfid_detail_entered is not None:
+                self.rfid_detail_entered.set()
+            if target in self.rfid_detail_unexpected_errors:
+                raise RuntimeError("fabricated unexpected RFID detail failure")
+            if self.rfid_detail_release is not None:
+                await self.rfid_detail_release.wait()
+            if target in self.rfid_detail_errors:
+                raise coordinator_module.GritHubApiError(
+                    "fabricated RFID detail failure"
+                )
+            detail = self.rfid_details.get(
+                target,
+                {"id": target, "state": False, "onlineStatus": True},
+            )
+            if isinstance(detail, list):
+                if not detail:
+                    raise coordinator_module.GritHubApiError(
+                        "fabricated RFID detail sequence exhausted"
+                    )
+                return deepcopy(detail.pop(0))
+            return deepcopy(detail)
+        except asyncio.CancelledError:
+            self.rfid_detail_cancelled += 1
+            raise
+        finally:
+            self.rfid_detail_active -= 1
 
     async def request_device_telemetry(self, device_type, device_id):
         target = (device_type, str(device_id))
@@ -402,7 +447,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                     )
                 )
 
-    def test_rfid_status_hydrates_lock_and_diagnostic_state(self):
+    def test_rfid_status_updates_only_diagnostic_state(self):
         instance = self.coordinator()
         self.assertTrue(
             self.send(
@@ -419,7 +464,8 @@ class CoordinatorMqttTests(unittest.TestCase):
             )
         )
         state = self.mqtt_state(instance, "rfid")
-        self.assertTrue(state["locked"])
+        self.assertNotIn("locked", state)
+        self.assertNotIn("state", state)
         self.assertTrue(state["online"])
         self.assertEqual(state["firmware_version"], "1.1.test")
         self.assertEqual(state["rssi"], -61)
@@ -437,49 +483,41 @@ class CoordinatorMqttTests(unittest.TestCase):
         )
         self.assertFalse(self.mqtt_state(instance, "solenoid")["state"])
 
-    def test_rfid_authoritative_s_field_maps_enabled_to_locked(self):
-        for message_type in ("sts", "s", "st"):
-            for raw, expected_locked in ((0, True), (1, False)):
-                with self.subTest(message_type=message_type, raw=raw):
-                    instance = self.coordinator()
-                    self.assertTrue(
-                        self.send(
-                            instance,
-                            device_type="rfid",
-                            device_id="device-rfid",
-                            message_type=message_type,
-                            payload={"s": raw},
-                        )
-                    )
-                    self.assertIs(
-                        self.mqtt_state(instance, "rfid")["locked"],
-                        expected_locked,
-                    )
-
-    def test_rfid_s_and_st_state_alias_remains_enabled_semantics(self):
-        for message_type in ("s", "st"):
-            with self.subTest(message_type=message_type):
+    def test_rfid_status_s_values_never_set_controllable_state(self):
+        for raw in (0, 1):
+            with self.subTest(raw=raw):
                 instance = self.coordinator()
                 self.assertTrue(
                     self.send(
                         instance,
                         device_type="rfid",
                         device_id="device-rfid",
-                        message_type=message_type,
-                        payload={"state": True, "seq": 1},
+                        message_type="sts",
+                        payload={"s": raw, "sts": 1},
                     )
                 )
-                self.assertFalse(self.mqtt_state(instance, "rfid")["locked"])
-                self.assertTrue(
-                    self.send(
-                        instance,
-                        device_type="rfid",
-                        device_id="device-rfid",
-                        message_type=message_type,
-                        payload={"state": False, "seq": 2},
+                state = self.mqtt_state(instance, "rfid")
+                self.assertNotIn("locked", state)
+                self.assertNotIn("state", state)
+
+    def test_rfid_s_and_st_do_not_set_controllable_state(self):
+        for message_type in ("s", "st"):
+            for payload in ({"state": True}, {"s": 0}):
+                with self.subTest(message_type=message_type, payload=payload):
+                    instance = self.coordinator()
+                    self.assertFalse(
+                        self.send(
+                            instance,
+                            device_type="rfid",
+                            device_id="device-rfid",
+                            message_type=message_type,
+                            payload=payload,
+                        )
                     )
-                )
-                self.assertTrue(self.mqtt_state(instance, "rfid")["locked"])
+                    self.assertNotIn(
+                        coordinator_module.MQTT_STATE_KEY,
+                        instance.data["devices"]["rfid"][0],
+                    )
 
     def test_rfid_status_semantics_are_device_specific(self):
         instance = self.coordinator()
@@ -1289,7 +1327,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.wait_for(wait_loop(), timeout=1)
 
-    async def test_startup_rest_does_not_invent_live_gate_or_rfid_state(self):
+    async def test_startup_individual_rest_hydrates_rfid_state(self):
         api = FakeApi(
             {
                 "gate": [
@@ -1302,21 +1340,34 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "rfid": [
                     {
                         "id": "device-rfid",
-                        "lockout": False,
-                        "onlineStatus": True,
+                        "state": False,
+                        "lockout": True,
+                        "onlineStatus": False,
                     }
                 ],
             }
         )
+        api.rfid_details["device-rfid"] = {
+            "id": "device-rfid",
+            "state": True,
+            "onlineStatus": True,
+        }
         instance = self.coordinator(api)
 
         refreshed = await instance._async_update_data()
+        instance.data = refreshed
 
-        self.assertNotIn(coordinator_module.MQTT_STATE_KEY, refreshed["devices"]["gate"][0])
-        self.assertNotIn(coordinator_module.MQTT_STATE_KEY, refreshed["devices"]["rfid"][0])
-        self.assertEqual(api.telemetry_calls, [])
-
-    async def test_repeated_rest_refresh_preserves_live_mqtt_state(self):
+        self.assertNotIn(
+            coordinator_module.MQTT_STATE_KEY,
+            refreshed["devices"]["gate"][0],
+        )
+        rfid = refreshed["devices"]["rfid"][0]
+        self.assertNotIn("state", rfid)
+        self.assertNotIn("lockout", rfid)
+        self.assertTrue(instance.rfid_enabled("device-rfid"))
+        self.assertTrue(rfid["onlineStatus"])
+        self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
+    async def test_periodic_individual_rest_replaces_rfid_state(self):
         api = FakeApi(
             {
                 "gate": [
@@ -1329,6 +1380,11 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "rfid": [{"id": "device-rfid", "state": False}],
             }
         )
+        api.rfid_details["device-rfid"] = {
+            "id": "device-rfid",
+            "state": True,
+            "onlineStatus": True,
+        }
         instance = self.coordinator(api)
         self.assertTrue(
             instance.handle_mqtt_message(
@@ -1339,7 +1395,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 {"position": 90, "open": True, "seq": 4},
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             instance.handle_mqtt_message(
                 "hub-expected",
                 "rfid",
@@ -1349,36 +1405,45 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        for _ in range(2):
-            refreshed = await instance._async_update_data()
-            instance.data = refreshed
-        gate = refreshed["devices"]["gate"][0]
-        rfid = refreshed["devices"]["rfid"][0]
+        first = await instance._async_update_data()
+        instance.data = first
+        self.assertTrue(instance.rfid_enabled("device-rfid"))
+        first_generation = instance.rfid_state_generation("device-rfid")
 
-        self.assertEqual(gate["position"], 10)
-        self.assertFalse(gate["open"])
-        self.assertFalse(rfid["state"])
-        gate_state = gate[coordinator_module.MQTT_STATE_KEY]
-        rfid_state = rfid[coordinator_module.MQTT_STATE_KEY]
+        api.rfid_details["device-rfid"] = {
+            "id": "device-rfid",
+            "state": False,
+            "onlineStatus": True,
+        }
+        refreshed = await instance._async_update_data()
+        instance.data = refreshed
+        gate_state = refreshed["devices"]["gate"][0][
+            coordinator_module.MQTT_STATE_KEY
+        ]
+
         self.assertEqual(gate_state["position"], 90)
         self.assertTrue(gate_state["open"])
-        self.assertFalse(rfid_state["locked"])
-        self.assertEqual(
-            gate_state["_ordering"]["gate"]["source_sequence"],
-            4,
+        self.assertFalse(instance.rfid_enabled("device-rfid"))
+        self.assertGreater(
+            instance.rfid_state_generation("device-rfid"),
+            first_generation,
         )
         self.assertEqual(
-            rfid_state["_ordering"]["state"]["source_sequence"],
-            4,
+            api.rfid_detail_calls,
+            ["device-rfid", "device-rfid"],
         )
-
-    async def test_missing_and_failed_rest_refresh_preserve_mqtt_state(self):
+    async def test_temporary_rfid_detail_failure_preserves_last_valid_state(self):
         api = FakeApi(
             {
                 "gate": [{"id": "device-gate", "name": "Test gate"}],
-                "rfid": [{"id": "device-rfid", "state": False}],
+                "rfid": [{"id": "device-rfid"}],
             }
         )
+        api.rfid_details["device-rfid"] = {
+            "id": "device-rfid",
+            "state": False,
+            "onlineStatus": True,
+        }
         instance = self.coordinator(api)
         self.assertTrue(
             instance.handle_mqtt_message(
@@ -1389,34 +1454,26 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 {"position": 90, "open": True},
             )
         )
-        self.assertTrue(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "rfid",
-                "device-rfid",
-                "st",
-                {"state": True},
-            )
-        )
 
-        refreshed = await instance._async_update_data()
-        instance.data = refreshed
-        api.collection_errors.update({"gate", "rfid"})
+        first = await instance._async_update_data()
+        instance.data = first
+        first_generation = instance.rfid_state_generation("device-rfid")
+        api.rfid_detail_errors.add("device-rfid")
         failed_refresh = await instance._async_update_data()
+        instance.data = failed_refresh
 
         gate_state = failed_refresh["devices"]["gate"][0][
             coordinator_module.MQTT_STATE_KEY
         ]
-        rfid_state = failed_refresh["devices"]["rfid"][0][
-            coordinator_module.MQTT_STATE_KEY
-        ]
         self.assertEqual(gate_state["position"], 90)
         self.assertTrue(gate_state["open"])
-        self.assertFalse(rfid_state["locked"])
-        self.assertIn("gate", failed_refresh["errors"])
-        self.assertIn("rfid", failed_refresh["errors"])
-
-    async def test_successful_rest_omission_preserves_mqtt_devices(self):
+        self.assertFalse(instance.rfid_enabled("device-rfid"))
+        self.assertEqual(
+            instance.rfid_state_generation("device-rfid"),
+            first_generation,
+        )
+        self.assertIn("rfid_state", failed_refresh["errors"])
+    async def test_successful_rest_omission_preserves_only_mqtt_gate_device(self):
         api = FakeApi({"gate": [], "rfid": []})
         instance = self.coordinator(api)
         self.assertTrue(
@@ -1428,7 +1485,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 {"position": 90, "open": True},
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             instance.handle_mqtt_message(
                 "hub-expected",
                 "rfid",
@@ -1441,15 +1498,10 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         refreshed = await instance._async_update_data()
 
         self.assertEqual(len(refreshed["devices"]["gate"]), 1)
-        self.assertEqual(len(refreshed["devices"]["rfid"]), 1)
+        self.assertEqual(refreshed["devices"]["rfid"], [])
         gate = refreshed["devices"]["gate"][0]
-        rfid = refreshed["devices"]["rfid"][0]
         self.assertEqual(
             set(gate),
-            {"id", coordinator_module.MQTT_STATE_KEY},
-        )
-        self.assertEqual(
-            set(rfid),
             {"id", coordinator_module.MQTT_STATE_KEY},
         )
         self.assertTrue(gate[coordinator_module.MQTT_STATE_KEY]["open"])
@@ -1457,9 +1509,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             gate[coordinator_module.MQTT_STATE_KEY]["position"],
             90,
         )
-        self.assertFalse(rfid[coordinator_module.MQTT_STATE_KEY]["locked"])
-
-    async def test_targeted_reconciliation_preserves_last_mqtt_state(self):
+    async def test_targeted_reconciliation_preserves_gate_mqtt_state(self):
         api = FakeApi()
         instance = self.coordinator(api)
         self.assertTrue(
@@ -1469,15 +1519,6 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 "device-gate",
                 "s",
                 {"position": 85, "open": True},
-            )
-        )
-        self.assertTrue(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "rfid",
-                "device-rfid",
-                "st",
-                {"state": True},
             )
         )
         instance.set_mqtt_connected(True)
@@ -1492,34 +1533,17 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         gate_state = instance.data["devices"]["gate"][0][
             coordinator_module.MQTT_STATE_KEY
         ]
-        rfid_state = instance.data["devices"]["rfid"][0][
-            coordinator_module.MQTT_STATE_KEY
-        ]
         self.assertEqual(gate_state["position"], 85)
         self.assertTrue(gate_state["open"])
-        self.assertFalse(rfid_state["locked"])
-
-    async def test_targeted_rfid_status_only_hydrates_and_confirms_state(self):
-        for raw, expected_locked in ((0, True), (1, False)):
+        self.assertIsNone(instance.rfid_enabled("device-rfid"))
+    async def test_targeted_rfid_status_updates_diagnostics_not_state(self):
+        for raw in (0, 1):
             with self.subTest(raw=raw):
-                api = FakeApi()
-                instance = self.coordinator(api)
-                instance.set_mqtt_connected(True)
-                confirmation = asyncio.create_task(
-                    instance.async_confirm_device_state(
-                        "rfid",
-                        "device-rfid",
-                        expected_locked,
-                        after_sequence=instance.mqtt_receive_sequence,
-                        timeout=0.2,
-                    )
-                )
-                await asyncio.sleep(0)
-                await asyncio.sleep(0)
-                self.assertEqual(
-                    api.telemetry_calls,
-                    [("rfid", "device-rfid")],
-                )
+                instance = self.coordinator(FakeApi())
+                reader = instance.data["devices"]["rfid"][0]
+                reader[coordinator_module.RFID_ENABLED_KEY] = True
+                reader[coordinator_module.RFID_STATE_GENERATION_KEY] = 1
+
                 self.assertTrue(
                     instance.handle_mqtt_message(
                         "hub-expected",
@@ -1535,15 +1559,14 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
 
-                self.assertTrue(
-                    await asyncio.wait_for(confirmation, timeout=1)
-                )
+                self.assertTrue(instance.rfid_enabled("device-rfid"))
                 state = instance.data["devices"]["rfid"][0][
                     coordinator_module.MQTT_STATE_KEY
                 ]
-                self.assertIs(state["locked"], expected_locked)
+                self.assertNotIn("locked", state)
                 self.assertTrue(state["online"])
-
+                self.assertEqual(state["firmware_version"], "test-version")
+                self.assertEqual(state["rssi"], -60)
     async def test_command_confirmation_rejects_stale_then_accepts_fresh_mqtt(self):
         api = FakeApi()
         instance = self.coordinator(api)
@@ -1619,8 +1642,8 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         confirmations = [
             asyncio.create_task(
                 instance.async_confirm_device_state(
-                    "rfid",
-                    "device-rfid",
+                    "gate",
+                    "device-gate",
                     True,
                     after_sequence=boundary,
                     timeout=0.2,
@@ -1630,24 +1653,23 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         ]
         await asyncio.wait_for(api.telemetry_entered.wait(), timeout=1)
         await asyncio.sleep(0)
-        self.assertEqual(api.telemetry_calls, [("rfid", "device-rfid")])
+        self.assertEqual(api.telemetry_calls, [("gate", "device-gate")])
 
         api.telemetry_release.set()
         self.assertTrue(
             instance.handle_mqtt_message(
                 "hub-expected",
-                "rfid",
-                "device-rfid",
-                "st",
-                {"state": False},
+                "gate",
+                "device-gate",
+                "s",
+                {"open": True},
             )
         )
         self.assertEqual(
             await asyncio.wait_for(asyncio.gather(*confirmations), timeout=1),
             [True, True],
         )
-        self.assertEqual(api.telemetry_calls, [("rfid", "device-rfid")])
-
+        self.assertEqual(api.telemetry_calls, [("gate", "device-gate")])
     async def test_one_waiter_timeout_does_not_cancel_shared_telemetry(self):
         api = FakeApi()
         api.telemetry_entered = asyncio.Event()
@@ -1693,15 +1715,15 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api.telemetry_active, 0)
         self.assertEqual(instance._telemetry_request_tasks, {})
 
-    async def test_disconnect_ends_command_confirmation_without_clearing_state(self):
+    async def test_disconnect_ends_gate_confirmation_without_clearing_state(self):
         api = FakeApi()
         instance = self.coordinator(api)
         instance.set_mqtt_connected(True)
         self.assertTrue(
             instance.handle_mqtt_message(
                 "hub-expected",
-                "rfid",
-                "device-rfid",
+                "gate",
+                "device-gate",
                 "st",
                 {"state": True},
             )
@@ -1709,8 +1731,8 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         boundary = instance.mqtt_receive_sequence
         confirmation = asyncio.create_task(
             instance.async_confirm_device_state(
-                "rfid",
-                "device-rfid",
+                "gate",
+                "device-gate",
                 False,
                 after_sequence=boundary,
                 timeout=0.2,
@@ -1721,13 +1743,12 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(instance.set_mqtt_connected(False))
 
         self.assertFalse(await asyncio.wait_for(confirmation, timeout=1))
-        self.assertFalse(
-            instance.data["devices"]["rfid"][0][
+        self.assertTrue(
+            instance.data["devices"]["gate"][0][
                 coordinator_module.MQTT_STATE_KEY
-            ]["locked"]
+            ]["open"]
         )
         self.assertEqual(instance._mqtt_state_waiters, set())
-
     async def test_disconnect_reconnect_invalidates_blocked_confirmation(self):
         api = FakeApi()
         api.telemetry_entered = asyncio.Event()
@@ -1798,7 +1819,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(instance._telemetry_request_tasks, {})
         self.assertEqual(instance._mqtt_state_waiters, set())
 
-    async def test_mqtt_received_during_rest_refresh_wins(self):
+    async def test_gate_mqtt_received_during_rest_refresh_wins(self):
         class BlockingApi(FakeApi):
             def __init__(self):
                 super().__init__(
@@ -1810,7 +1831,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                                 "open": False,
                             }
                         ],
-                        "rfid": [{"id": "device-rfid", "state": False}],
+                        "rfid": [{"id": "device-rfid"}],
                     }
                 )
                 self.refresh_entered = asyncio.Event()
@@ -1836,19 +1857,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 {"position": 92, "open": True, "seq": 8},
             )
         )
-        self.assertTrue(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "rfid",
-                "device-rfid",
-                "st",
-                {"state": True, "seq": 8},
-            )
-        )
         instance.data["devices"]["gate"][0][
-            coordinator_module.MQTT_STATE_KEY
-        ]["last_received_at"] = datetime(2000, 1, 1, tzinfo=timezone.utc)
-        instance.data["devices"]["rfid"][0][
             coordinator_module.MQTT_STATE_KEY
         ]["last_received_at"] = datetime(2000, 1, 1, tzinfo=timezone.utc)
         api.refresh_release.set()
@@ -1860,12 +1869,11 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["position"], 92)
         self.assertTrue(state["open"])
         self.assertEqual(state["source_sequence"], 8)
-        rfid_state = refreshed["devices"]["rfid"][0][
-            coordinator_module.MQTT_STATE_KEY
-        ]
-        self.assertFalse(rfid_state["locked"])
-        self.assertEqual(rfid_state["source_sequence"], 8)
-
+        self.assertFalse(
+            refreshed["devices"]["rfid"][0][
+                coordinator_module.RFID_ENABLED_KEY
+            ]
+        )
     async def test_reconciliation_targets_only_unique_documented_ids(self):
         devices = _device_map()
         devices["gate"] = [
@@ -2368,10 +2376,12 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(instance.gritlock_state)
         self.assertIsNone(instance._gritlock_settle_task)
 
-    async def test_rfid_stale_match_and_fresh_contradiction_fail_confirmation(self):
-        instance = self.coordinator(FakeApi())
+    async def test_rfid_mqtt_state_cannot_confirm_a_rest_command(self):
+        api = FakeApi()
+        instance = self.coordinator(api)
         instance.set_mqtt_connected(True)
-        self.assertTrue(
+
+        self.assertFalse(
             instance.handle_mqtt_message(
                 "hub-expected",
                 "rfid",
@@ -2380,41 +2390,16 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 {"state": True},
             )
         )
-        boundary = instance.mqtt_receive_sequence
         self.assertFalse(
             await instance.async_confirm_device_state(
                 "rfid",
                 "device-rfid",
                 True,
-                after_sequence=boundary,
+                after_sequence=instance.mqtt_receive_sequence,
                 timeout=0.01,
             )
         )
-
-        boundary = instance.mqtt_receive_sequence
-        confirmation = asyncio.create_task(
-            instance.async_confirm_device_state(
-                "rfid",
-                "device-rfid",
-                True,
-                after_sequence=boundary,
-                timeout=0.1,
-            )
-        )
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        self.assertTrue(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "rfid",
-                "device-rfid",
-                "st",
-                {"state": True},
-            )
-        )
-        self.assertFalse(await asyncio.wait_for(confirmation, timeout=1))
-        self.assertEqual(instance._mqtt_state_waiters, set())
-
+        self.assertEqual(api.telemetry_calls, [])
     async def test_gritlock_stop_and_cancellation_release_waiters(self):
         devices = _device_map()
         devices["trigger"] = [{"id": "trigger-one"}]
@@ -2485,6 +2470,238 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 waiter.cancel()
             instance._mqtt_state_waiters.clear()
 
+    async def test_rfid_detail_reads_match_only_exact_unique_ids(self):
+        api = FakeApi(
+            {
+                "rfid": [
+                    {"id": "reader-one", "lockout": False},
+                    {"id": "reader-two"},
+                    {"id": "reader-three"},
+                    {"id": "duplicate"},
+                    {"id": "duplicate"},
+                    {"name": "Missing identity"},
+                ]
+            }
+        )
+        api.rfid_details.update(
+            {
+                "reader-one": {
+                    "id": "reader-one",
+                    "state": True,
+                    "onlineStatus": True,
+                },
+                "reader-three": {
+                    "id": "different-reader",
+                    "state": False,
+                    "onlineStatus": True,
+                },
+            }
+        )
+        api.rfid_detail_errors.add("reader-two")
+        instance = self.coordinator(api)
+
+        refreshed = await instance._async_update_data()
+        instance.data = refreshed
+
+        self.assertEqual(
+            api.rfid_detail_calls,
+            ["reader-one", "reader-two", "reader-three"],
+        )
+        self.assertTrue(instance.rfid_enabled("reader-one"))
+        self.assertIsNone(instance.rfid_enabled("reader-two"))
+        self.assertIsNone(instance.rfid_enabled("reader-three"))
+        self.assertIsNone(instance.rfid_enabled("duplicate"))
+        self.assertIn("rfid_state", refreshed["errors"])
+        for reader in refreshed["devices"]["rfid"]:
+            self.assertNotIn("lockout", reader)
+
+    async def test_rfid_detail_reads_are_limited_and_concurrency_bounded(self):
+        readers = [{"id": f"reader-{index:03d}"} for index in range(70)]
+        api = FakeApi({"rfid": readers})
+        api.rfid_detail_release = asyncio.Event()
+        instance = self.coordinator(api)
+
+        refresh = asyncio.create_task(instance._async_update_data())
+
+        async def wait_for_concurrency_limit():
+            for _attempt in range(100):
+                if api.rfid_detail_max_active == 4:
+                    return
+                await asyncio.sleep(0)
+            self.fail("RFID detail reads did not reach bounded concurrency")
+
+        await asyncio.wait_for(wait_for_concurrency_limit(), timeout=1)
+        self.assertEqual(api.rfid_detail_active, 4)
+        self.assertEqual(len(api.rfid_detail_calls), 4)
+        api.rfid_detail_release.set()
+        refreshed = await asyncio.wait_for(refresh, timeout=1)
+
+        self.assertEqual(len(api.rfid_detail_calls), 64)
+        self.assertEqual(api.rfid_detail_max_active, 4)
+        self.assertEqual(api.rfid_detail_active, 0)
+        self.assertIn("rfid_state", refreshed["errors"])
+        self.assertIsNone(
+            next(
+                reader
+                for reader in refreshed["devices"]["rfid"]
+                if reader["id"] == "reader-069"
+            ).get(coordinator_module.RFID_ENABLED_KEY)
+        )
+
+    async def test_overlapping_rfid_work_shares_global_concurrency_bound(self):
+        api = FakeApi()
+        api.rfid_detail_release = asyncio.Event()
+        instance = self.coordinator(api)
+        first_devices = {
+            "rfid": [{"id": f"first-{index}"} for index in range(4)]
+        }
+        second_devices = {
+            "rfid": [{"id": f"second-{index}"} for index in range(4)]
+        }
+        first = asyncio.create_task(
+            instance._async_refresh_rfid_states(first_devices)
+        )
+        second = asyncio.create_task(
+            instance._async_refresh_rfid_states(second_devices)
+        )
+
+        async def wait_for_limit():
+            for _attempt in range(100):
+                if api.rfid_detail_active == 4:
+                    return
+                await asyncio.sleep(0)
+            self.fail("overlapping RFID reads did not reach concurrency bound")
+
+        await asyncio.wait_for(wait_for_limit(), timeout=1)
+        self.assertEqual(api.rfid_detail_max_active, 4)
+        self.assertEqual(len(api.rfid_detail_calls), 4)
+        api.rfid_detail_release.set()
+        self.assertEqual(
+            await asyncio.wait_for(asyncio.gather(first, second), timeout=1),
+            [True, True],
+        )
+        self.assertEqual(len(api.rfid_detail_calls), 8)
+        self.assertEqual(api.rfid_detail_max_active, 4)
+        self.assertEqual(api.rfid_detail_active, 0)
+    async def test_rfid_detail_batch_timeout_cancels_active_reads(self):
+        api = FakeApi({"rfid": [{"id": "reader-timeout"}]})
+        api.rfid_detail_release = asyncio.Event()
+        instance = self.coordinator(api)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_STATE_REFRESH_TIMEOUT",
+            0.01,
+        ):
+            refreshed = await asyncio.wait_for(
+                instance._async_update_data(),
+                timeout=1,
+            )
+
+        self.assertIn("rfid_state", refreshed["errors"])
+        self.assertEqual(api.rfid_detail_cancelled, 1)
+        self.assertEqual(api.rfid_detail_active, 0)
+        self.assertEqual(instance._rfid_read_tasks, set())
+    async def test_stop_cancels_rfid_detail_reads_without_background_work(self):
+        api = FakeApi({"rfid": [{"id": "reader-blocked"}]})
+        api.rfid_detail_entered = asyncio.Event()
+        api.rfid_detail_release = asyncio.Event()
+        instance = self.coordinator(api)
+        refresh = asyncio.create_task(instance._async_update_data())
+        await asyncio.wait_for(api.rfid_detail_entered.wait(), timeout=1)
+
+        await asyncio.wait_for(
+            instance.async_stop_state_reconciliation(),
+            timeout=1,
+        )
+        outcome = await asyncio.gather(refresh, return_exceptions=True)
+
+        self.assertIsInstance(outcome[0], asyncio.CancelledError)
+        self.assertEqual(api.rfid_detail_cancelled, 1)
+        self.assertEqual(api.rfid_detail_active, 0)
+        self.assertEqual(instance._rfid_read_tasks, set())
+        self.assertFalse(instance.start_state_reconciliation())
+
+    async def test_rfid_confirmation_requires_fresh_matching_individual_read(self):
+        api = FakeApi({"rfid": [{"id": "device-rfid"}]})
+        api.rfid_details["device-rfid"] = [
+            {"id": "device-rfid", "state": False, "onlineStatus": True},
+            {"id": "device-rfid", "state": True, "onlineStatus": True},
+            {"id": "device-rfid", "state": False, "onlineStatus": True},
+        ]
+        instance = self.coordinator(api)
+        first = await instance._async_update_data()
+        instance.data = first
+        boundary = instance.rfid_state_generation("device-rfid")
+
+        self.assertTrue(
+            await instance.async_confirm_rfid_state(
+                "device-rfid",
+                True,
+                after_generation=boundary,
+                timeout=0.1,
+            )
+        )
+        self.assertTrue(instance.rfid_enabled("device-rfid"))
+        next_boundary = instance.rfid_state_generation("device-rfid")
+        self.assertFalse(
+            await instance.async_confirm_rfid_state(
+                "device-rfid",
+                True,
+                after_generation=next_boundary,
+                timeout=0.1,
+            )
+        )
+        self.assertFalse(instance.rfid_enabled("device-rfid"))
+        self.assertEqual(
+            api.rfid_detail_calls,
+            ["device-rfid", "device-rfid", "device-rfid"],
+        )
+
+    async def test_stale_rfid_detail_cannot_overwrite_newer_confirmation(self):
+        class OrderedApi(FakeApi):
+            def __init__(self):
+                super().__init__()
+                self.first_entered = asyncio.Event()
+                self.first_release = asyncio.Event()
+                self.calls = 0
+
+            async def get_rfid_device(self, device_id):
+                self.calls += 1
+                if self.calls == 1:
+                    self.first_entered.set()
+                    await self.first_release.wait()
+                    return {"id": device_id, "state": False}
+                return {"id": device_id, "state": True}
+
+        api = OrderedApi()
+        instance = self.coordinator(api)
+        stale_devices = deepcopy(instance.data["devices"])
+        stale_read = asyncio.create_task(
+            instance._async_refresh_rfid_states(stale_devices)
+        )
+        await asyncio.wait_for(api.first_entered.wait(), timeout=1)
+        boundary = instance.rfid_state_generation("device-rfid")
+
+        self.assertFalse(
+            await instance.async_confirm_rfid_state(
+                "device-rfid",
+                False,
+                after_generation=boundary,
+                timeout=0.1,
+            )
+        )
+        self.assertTrue(instance.rfid_enabled("device-rfid"))
+        newer_generation = instance.rfid_state_generation("device-rfid")
+        api.first_release.set()
+        self.assertTrue(await asyncio.wait_for(stale_read, timeout=1))
+
+        instance._preserve_rfid_rest_state(stale_devices, instance.data["devices"])
+        self.assertTrue(instance.rfid_enabled("device-rfid"))
+        self.assertEqual(
+            instance.rfid_state_generation("device-rfid"),
+            newer_generation,
+        )
     async def test_normal_polling_does_not_request_mesh_telemetry(self):
         api = FakeApi(
             {
