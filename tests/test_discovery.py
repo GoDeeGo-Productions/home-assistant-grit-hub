@@ -62,10 +62,13 @@ class FakePahoScenario:
         self.suback_message_id = 1
         self.suppress_suback = False
         self.loop_result = 0
+        self.suback_during_subscribe = False
         self.messages = []
         self.connect_failure = False
         self.silent = False
         self.loop_started_event = threading.Event()
+
+        self.events = []
 
     def module(self):
         scenario = self
@@ -123,7 +126,12 @@ class FakePahoScenario:
                     )
                     for topic_value in scenario.messages_before_suback:
                         self.on_message(self, None, FakeMessage(topic_value))
-                    if self.subscribe_calls and not scenario.suppress_suback:
+                    if (
+                        self.subscribe_calls
+                        and not scenario.suppress_suback
+                        and not scenario.suback_during_subscribe
+                    ):
+                        scenario.events.append("suback")
                         self.on_subscribe(
                             self,
                             None,
@@ -135,7 +143,19 @@ class FakePahoScenario:
                 return scenario.loop_result
 
             def subscribe(self, topic, *, qos):
+                scenario.events.append("subscribe")
                 self.subscribe_calls.append((topic, qos))
+                if (
+                    scenario.suback_during_subscribe
+                    and not scenario.suppress_suback
+                ):
+                    scenario.events.append("suback")
+                    self.on_subscribe(
+                        self,
+                        None,
+                        scenario.suback_message_id,
+                        scenario.suback_reason_codes,
+                    )
                 return scenario.subscribe_result, 1
 
             def publish(self, *_args, **_kwargs):
@@ -143,6 +163,7 @@ class FakePahoScenario:
                 raise AssertionError("discovery must never publish")
 
             def disconnect(self):
+                scenario.events.append("disconnect")
                 self.disconnect_calls += 1
                 return 0
 
@@ -272,6 +293,29 @@ class PassiveMqttDiscoveryTests(unittest.TestCase):
 
         self.assertFalse(result.connected)
         self.assertEqual(client.subscribe_calls, [(f"grit/{HUB_ID}/+/+/#", 0)])
+        self.assert_stopped(client)
+
+    def test_suback_during_subscribe_return_window_is_latched(self):
+        scenario = FakePahoScenario()
+        scenario.suback_during_subscribe = True
+
+        result, client = self.run_probe(scenario)
+
+        self.assertEqual(result, DISCOVERY.MqttProbeResult(True, HUB_ID))
+        self.assertLess(
+            scenario.events.index("suback"),
+            scenario.events.index("disconnect"),
+        )
+        self.assert_stopped(client)
+
+    def test_early_mismatched_suback_is_ignored_until_timeout(self):
+        scenario = FakePahoScenario()
+        scenario.suback_during_subscribe = True
+        scenario.suback_message_id = 2
+
+        result, client = self.run_probe(scenario, timeout=0.02)
+
+        self.assertFalse(result.connected)
         self.assert_stopped(client)
 
     def test_failed_suback_fails_closed(self):

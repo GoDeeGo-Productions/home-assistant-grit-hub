@@ -197,6 +197,8 @@ def passive_mqtt_discover(
     active = True
     subscribed = False
     subscription_mid: Any | None = None
+    subscription_in_progress = False
+    early_suback: tuple[Any, bool] | None = None
     failed = False
     cancelled = False
     hub_ids: set[str] = set()
@@ -213,7 +215,8 @@ def passive_mqtt_discover(
         reason_code: Any,
         _properties: Any = None,
     ) -> None:
-        nonlocal failed, subscription_mid
+        nonlocal early_suback, failed, subscribed
+        nonlocal subscription_in_progress, subscription_mid
         if not is_current(callback_client):
             return
         if not _reason_code_is_success(reason_code):
@@ -222,6 +225,11 @@ def passive_mqtt_discover(
                     failed = True
                     condition.notify_all()
             return
+        with condition:
+            if not active or callback_client is not client:
+                return
+            subscription_in_progress = True
+            early_suback = None
         try:
             result, message_id = callback_client.subscribe(
                 topic_filter,
@@ -233,10 +241,21 @@ def passive_mqtt_discover(
         with condition:
             if not active or callback_client is not client:
                 return
+            subscription_in_progress = False
             if not _reason_code_is_success(result):
+                early_suback = None
                 failed = True
             else:
                 subscription_mid = message_id
+                if (
+                    early_suback is not None
+                    and early_suback[0] == subscription_mid
+                ):
+                    if early_suback[1]:
+                        subscribed = True
+                    else:
+                        failed = True
+                early_suback = None
             condition.notify_all()
 
     def on_subscribe(
@@ -246,7 +265,7 @@ def passive_mqtt_discover(
         reason_codes: Any,
         _properties: Any = None,
     ) -> None:
-        nonlocal subscribed, failed
+        nonlocal early_suback, failed, subscribed
         if not is_current(callback_client):
             return
         if isinstance(reason_codes, (list, tuple)):
@@ -257,10 +276,13 @@ def passive_mqtt_discover(
         else:
             acknowledged = _reason_code_is_success(reason_codes)
         with condition:
+            if not active or callback_client is not client:
+                return
+            if subscription_in_progress:
+                early_suback = (message_id, acknowledged)
+                return
             if (
-                not active
-                or callback_client is not client
-                or subscription_mid is None
+                subscription_mid is None
                 or message_id != subscription_mid
             ):
                 return
