@@ -357,12 +357,15 @@ def passive_mqtt_discover(
         connect_result = client.connect_async(
             host, port, keepalive=keepalive
         )
-        if not _reason_code_is_success(connect_result):
+        if (
+            connect_result is not None
+            and not _reason_code_is_success(connect_result)
+        ):
             return MqttProbeResult(False)
-        loop_started = True
         result = client.loop_start()
         if not _reason_code_is_success(result):
             return MqttProbeResult(False)
+        loop_started = True
 
         deadline = time.monotonic() + float(timeout)
         with condition:
