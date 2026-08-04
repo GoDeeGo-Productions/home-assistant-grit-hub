@@ -15,66 +15,69 @@ facts; they do not claim that remaining settings or publication steps occurred.
 - [ ] Future commit identity policy confirmed
 - [x] MIT licence approved and present
 - [x] Security reporting channel approved: GitHub Private Vulnerability Reporting
-- [ ] GitHub Private Vulnerability Reporting enabled and verified
+- [x] GitHub Private Vulnerability Reporting enabled and verified
+- [x] Dependency graph enabled
+- [x] Dependabot alerts enabled
 
 ## Metadata
 
-- [ ] GitHub description set
-- [ ] GitHub topics set
-- [ ] README URLs checked after transfer
-- [ ] manifest URLs checked after transfer
-- [ ] hacs.json checked
+- [x] GitHub description set
+- [x] GitHub topics set
+- [x] README URLs checked after transfer
+- [x] manifest URLs checked after transfer
+- [x] hacs.json checked
 - [ ] CODEOWNERS checked
-- [ ] issue templates checked
-- [ ] workflow badges checked
+- [x] issue templates checked
+- [x] workflow badge decision checked; none required before publication
 
 ## Quality
 
-- [ ] Full CI green
-- [ ] Full unit suite green
-- [ ] Secret scan clean
-- [ ] Git history exposure reviewed
-- [ ] No private OpenAPI content tracked
-- [ ] Markdown links valid
-- [ ] JSON/YAML valid
-- [ ] `git diff --check` clean
-- [ ] No repetitive benign MQTT warning noise
+- [x] Full CI green
+- [x] Full unit suite green
+- [x] Secret scan clean
+- [x] Git history exposure reviewed
+- [x] No private OpenAPI content tracked
+- [x] Markdown links valid
+- [x] JSON/YAML valid
+- [x] `git diff --check` clean
+- [x] No repetitive benign MQTT warning noise
 
 ## Live acceptance
 
-- [ ] Clean HACS install
-- [ ] Initial API authentication
-- [ ] MQTT connection and exact subscription
-- [ ] Gate startup state
-- [ ] Gate HA command
-- [ ] Gate GRIT app update
-- [ ] Mixed RFID startup states
-- [ ] RFID HA lock/unlock
-- [ ] RFID GRIT app update responsiveness
-- [ ] Offline RFID unavailable
-- [ ] GRITLock lock/unlock
-- [ ] Collector on/off
-- [ ] Collector delayed shutdown
-- [ ] LED/other implemented controls
-- [ ] Token rotation/Reconfigure
-- [ ] No duplicate devices/entities
-- [ ] Home Assistant restart
-- [ ] Normal uninstall
-- [ ] Deterministic clean reinstall
+- [x] Clean HACS install
+- [x] Initial API authentication
+- [x] MQTT connection and exact subscription
+- [x] Gate startup state
+- [x] Gate HA command
+- [x] Gate GRIT app update
+- [x] Mixed RFID startup states
+- [x] RFID HA lock/unlock
+- [x] RFID GRIT app update responsiveness
+- [x] Offline RFID unavailable
+- [x] GRITLock lock/unlock
+- [x] Collector on/off
+- [x] Collector delayed shutdown
+- [x] LED/other implemented controls
+- [x] Token rotation/Reconfigure
+- [x] No duplicate devices/entities
+- [x] Home Assistant restart
+- [x] Normal uninstall
+- [x] Deterministic clean reinstall
 
-The acceptance report records user-provided live outcomes, but checklist sign-off
-remains a separate owner action against the selected immutable release commit.
+The acceptance report records the signed-off live outcomes from the transferred
+repository URL. Selecting the immutable release commit, tagging, and publication
+remain separate actions and are not implied by this checklist.
 
 ## Publishing
 
-- [ ] Manifest version confirmed as 0.1.0
-- [ ] Changelog finalised
-- [ ] Acceptance report signed off
+- [x] Manifest version confirmed as 0.1.0
+- [x] Changelog finalised
+- [x] Acceptance report signed off
 - [ ] Commit selected for release
 - [ ] Tag `v0.1.0`
 - [ ] GitHub release created
 - [ ] Release notes published
-- [ ] HACS custom install retested against final organisation URL
+- [x] HACS custom install retested against final organisation URL
 - [ ] Official GRIT webpage link published
 - [ ] HACS default catalogue submission decision made
 

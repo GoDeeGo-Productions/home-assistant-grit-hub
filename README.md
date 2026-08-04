@@ -7,8 +7,8 @@ GRIT Hub gates, RFID readers, GRITLock, collectors, and hub controls. It combine
 the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
-> **Release status:** `v0.1.0` release candidate. This is not yet a final
-> published release or a HACS default-catalogue listing.
+> **Release status:** `v0.1.0` is accepted for publication. It has not yet been
+> tagged or published and is not a HACS default-catalogue listing.
 
 This project is experimental, provided as-is, and is not affiliated with,
 endorsed by, or supported by GRIT or GRIT Automation.
@@ -92,9 +92,9 @@ Custom Repository:
    **GRIT Hub**.
 
 The repository transfer to GoDeeGo Productions and the final URL are verified.
-`v0.1.0` remains a release candidate and has not been published; HACS acceptance
-against the final URL remains a release task. See the full [Installation
-guide](docs/INSTALLATION.md).
+`v0.1.0` has completed final live acceptance but has not yet been tagged or
+published. HACS Custom Repository acceptance against the final URL passed. See
+the full [Installation guide](docs/INSTALLATION.md).
 
 ## Manual installation
 
