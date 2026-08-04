@@ -7,32 +7,81 @@ body:
   - type: markdown
     attributes:
       value: >-
-        Keep requests focused and omit credentials, private site details,
-        personal data, and diagnostic payloads.
-  - type: textarea
-    id: use_case
+        Use fabricated examples only. Do not include credentials, addresses,
+        hostnames, hub/device IDs, personal data, raw REST/MQTT payloads, logs,
+        diagnostics, or other private installation information.
+  - type: input
+    id: home_assistant_version
     attributes:
-      label: Use case
-      description: What Home Assistant outcome are you trying to achieve?
+      label: Home Assistant version
+      placeholder: 2026.3.0
+    validations:
+      required: true
+  - type: input
+    id: integration_version
+    attributes:
+      label: GRIT Hub integration version
+      placeholder: 0.1.0 release candidate or commit ID
+    validations:
+      required: true
+  - type: dropdown
+    id: installation_method
+    attributes:
+      label: Installation method
+      options:
+        - HACS Custom Repository
+        - Manual custom_components copy
+    validations:
+      required: true
+  - type: input
+    id: entity_type
+    attributes:
+      label: Affected entity or platform
+      placeholder: Gate cover, RFID lock, GRITLock, collector switch, setup, or diagnostics
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What safe Home Assistant outcome should be possible?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Current behavior
+      description: What does the current integration do instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: survives_restart
+    attributes:
+      label: Is the current limitation unchanged after restart?
+      options:
+        - "Yes"
+        - "No"
+        - Not applicable or not tested
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed change
-      description: Describe the smallest change that would meet the use case.
+      label: Proposed focused change
+      description: Explain the smallest change and its REST/MQTT authority evidence.
     validations:
       required: true
   - type: textarea
-    id: alternatives
+    id: redacted_logs
     attributes:
-      label: Alternatives considered
-      description: Describe any existing entities, services, or automations you tried.
+      label: Redacted logs, if relevant
+      description: Include only manually reviewed redacted lines; most feature requests need none.
+      render: text
   - type: textarea
     id: safety
     attributes:
-      label: Physical safety impact
-      description: Explain whether this could operate gates or other access-control equipment.
+      label: Physical safety and privacy impact
+      description: Explain whether the proposal can operate equipment or change data exposure.
     validations:
       required: true
   - type: checkboxes
@@ -40,5 +89,5 @@ body:
     attributes:
       label: Confirmation
       options:
-        - label: This request contains no credentials or private installation data.
+        - label: This request contains only fabricated examples and no secret or private installation data.
           required: true

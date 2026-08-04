@@ -820,6 +820,37 @@ class GritLiveMqttTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(TypeError):
                 self._new_client(**kwargs)
 
+    def test_supported_empty_payload_is_debug_not_warning(self) -> None:
+        payload_marker = "fabricated-unsupported-value"
+        factory = FakeClientFactory()
+        client = self._new_client()
+        with self.assertLogs(MQTT_MODULE._LOGGER, level="DEBUG") as captured:
+            with self._paho_patch(factory):
+                self.assertTrue(client.start())
+            fake = factory.instances[0]
+            self._connect_and_acknowledge(fake)
+            fake.on_message(
+                fake,
+                None,
+                FakeMessage(
+                    ('{"unsupported":"' + payload_marker + '"}').encode(),
+                    FABRICATED_TOPIC,
+                ),
+            )
+            client.stop()
+
+        matching = [
+            record
+            for record in captured.records
+            if record.getMessage()
+            == "GRIT MQTT message rejected: no supported payload"
+        ]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0].levelname, "DEBUG")
+        output = "\n".join(captured.output)
+        self.assertNotIn(payload_marker, output)
+        self.assertNotIn(FABRICATED_TOPIC, output)
+
     def test_logs_exclude_connection_and_message_values(self) -> None:
         payload_marker = "fabricated-payload-marker"
         factory = FakeClientFactory()

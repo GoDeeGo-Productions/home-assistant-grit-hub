@@ -61,8 +61,9 @@ class GritHubApiClient:
                 json=json,
                 params=params,
                 timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
             ) as resp:
-                if resp.status >= 400:
+                if resp.status >= 300:
                     raise GritHubApiError(
                         f"{method.upper()} {endpoint} failed: HTTP {resp.status}",
                         http_status=resp.status,

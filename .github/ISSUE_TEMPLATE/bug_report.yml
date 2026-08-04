@@ -7,8 +7,10 @@ body:
   - type: markdown
     attributes:
       value: >-
-        Do not include credentials, tokens, private addresses, personal data,
-        or unredacted API payloads.
+        Never include API tokens, MQTT credentials, private addresses,
+        hostnames, hub/device IDs, personal data, raw payloads, backups,
+        diagnostics, or unredacted logs. Stop repeated testing if equipment may
+        move.
   - type: input
     id: home_assistant_version
     attributes:
@@ -19,36 +21,69 @@ body:
   - type: input
     id: integration_version
     attributes:
-      label: Integration version
-      placeholder: 0.1.0
+      label: GRIT Hub integration version
+      placeholder: 0.1.0 release candidate or commit ID
+    validations:
+      required: true
+  - type: dropdown
+    id: installation_method
+    attributes:
+      label: Installation method
+      options:
+        - HACS Custom Repository
+        - Manual custom_components copy
+    validations:
+      required: true
+  - type: input
+    id: entity_type
+    attributes:
+      label: Affected entity or platform
+      placeholder: Gate cover, RFID lock, GRITLock, collector switch, setup, or diagnostics
     validations:
       required: true
   - type: textarea
-    id: problem
+    id: expected
     attributes:
-      label: Problem
-      description: Describe what happened and what you expected.
+      label: Expected behavior
+      description: Describe the safe result you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe what happened without including installation-specific values.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: Steps to reproduce
-      description: Provide the smallest safe sequence that reproduces the issue.
+      label: Safe reproduction steps
+      description: Provide the smallest sequence. Do not reproduce an unsafe physical operation.
+    validations:
+      required: true
+  - type: dropdown
+    id: survives_restart
+    attributes:
+      label: Does the problem survive a Home Assistant restart?
+      options:
+        - "Yes"
+        - "No"
+        - Not tested because restart could be unsafe or disruptive
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
-      label: Redacted logs
-      description: Include only relevant lines after removing all sensitive and site-specific data.
+      label: Manually reviewed redacted logs
+      description: Include only the minimum relevant lines after running redaction and manually checking them.
       render: text
   - type: checkboxes
     id: safety
     attributes:
       label: Safety and privacy confirmation
       options:
-        - label: I removed credentials, private installation details, personal data, and diagnostic payloads.
+        - label: I removed all credentials, addresses, identifiers, personal data, payloads, and private installation details.
           required: true
         - label: Reproducing this issue does not require an unsafe or unsupervised physical operation.
           required: true

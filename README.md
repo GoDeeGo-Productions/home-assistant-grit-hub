@@ -1,372 +1,183 @@
-# GRIT Hub Home Assistant Integration
+# GRIT Hub for Home Assistant
 
 ![Temporary neutral GRIT Hub icon](custom_components/grit_hub/brand/icon.png)
 
-GRIT Hub is an unofficial, experimental Home Assistant custom integration for
-GRIT Hub systems. It uses the GRIT REST API for discovery, reconciliation and
-physical commands, and a dedicated direct MQTT connection for live device
-state.
+GRIT Hub for Home Assistant is an unofficial Home Assistant custom component for
+GRIT Hub gates, RFID readers, GRITLock, collectors, and hub controls. It combines
+the authenticated GRIT REST API with subscribe-only MQTT state updates and is
+designed for installation through HACS as a custom integration.
 
-This project is not affiliated with, endorsed by, or supported by GRIT or GRIT
-Automation. It is provided as-is, without support or warranty.
+> **Release status:** `v0.1.0` release candidate. This is not yet a final
+> published release or a HACS default-catalogue listing.
+
+This project is experimental, provided as-is, and is not affiliated with,
+endorsed by, or supported by GRIT or GRIT Automation.
 
 > [!CAUTION]
-> GRIT systems can control gates and other physical access-control equipment.
-> This integration must not be relied upon as the sole security or
-> access-control mechanism. Maintain independent physical controls, safety
-> devices and manual access procedures. Do not represent or use this software
-> as a safety, security or life-safety system.
+> GRIT equipment can operate gates and physical access-control devices. This
+> integration must not be relied upon as the sole security or access-control
+> mechanism. Maintain independent safety devices, physical controls, and manual
+> access procedures. It is not a safety, security, or life-safety system.
 
-## Status and compatibility
+## Features
 
-- Version: `0.1.0`
-- Integration domain: `grit_hub`
-- Minimum supported Home Assistant version: `2026.3.0`
-- Distribution: HACS Custom Repository or manual installation
-- Status: unofficial, experimental and provided as-is
+- Gate covers with retained startup hydration, immediate MQTT updates, and
+  post-command MQTT confirmation.
+- One RFID lock entity per reader, using authoritative individual REST state and
+  event-driven MQTT invalidation refresh.
+- One system-wide GRITLock entity using bounded trigger MQTT consensus with
+  provisional REST startup state.
+- Collector, solenoid, latch, and powerbank switches, with deterministic
+  individual-detail confirmation for collectors.
+- Hub connectivity, software, device-count, MQTT, and per-device diagnostics.
+- System LED brightness, service restart, hub reboot, refresh, and locate
+  controls.
+- Config-entry reconfiguration for API token rotation and MQTT settings.
 
-Home Assistant 2026.3 or newer is required because this repository uses local
-custom-integration brand images, which Home Assistant supports from 2026.3.
-Runtime validation is currently based on static checks and deterministic mocked
-tests; repository tests do not contact a broker, GRIT API or physical device.
-
-## Architecture and supported functionality
+## How it works
 
 The integration has two required data paths:
 
-- **REST API:** authenticates with a bearer token, discovers devices, polls for
-  reconciliation, and sends explicitly bounded physical operations.
-- **Direct MQTT:** uses its own Paho MQTT v3.1.1 client, subscribes at QoS 0 to
-  `grit/+/+/+/#`, validates the configured hub ID, and applies an allowlist of
-  sanitized live state and diagnostic fields.
+- **REST API:** authenticated discovery, bounded reconciliation, and explicit
+  device commands.
+- **Direct MQTT:** config-flow validation subscribes to the exact hub-scoped
+  topic. The dedicated runtime Paho MQTT v3.1.1 client subscribes at QoS 0 to
+  `grit/+/+/+/#`, then the coordinator accepts only the configured hub ID. It
+  never publishes.
 
-The integration does not use or require Home Assistant's MQTT integration. HACS
-installs this integration only; it does not install, configure or provide an
-MQTT broker. Broker access must already exist. The GRIT API token and MQTT
-credentials are separate and may differ.
+Home Assistant's MQTT integration is not required. HACS installs only this
+custom integration; it does not provide or configure a broker. See
+[Architecture](docs/ARCHITECTURE.md) for the source-of-truth and confirmation
+rules.
 
-The MQTT client only subscribes. It never publishes MQTT messages or commands.
-All gate, cover, lock, switch, locate and device-command operations use the REST API.
-No MQTT payload, complete topic, broker address, credentials, hub ID or device
-ID is retained in entity attributes or intentionally written to logs.
+## Entity summary
 
-The manifest uses `local_polling` because the required REST reconciliation path
-polls directly from the configured API. The integration is hybrid: live state
-is pushed over MQTT, and either configured endpoint may be located elsewhere.
-Home Assistant's IoT-class field does not express that topology separately.
+| Platform | Main entities |
+| --- | --- |
+| `cover` | One gate cover per discovered gate |
+| `lock` | System GRITLock and one lock per RFID reader |
+| `switch` | Collector, solenoid, latch, and powerbank controls |
+| `number` | System LED brightness |
+| `button` | Refresh, locate, GRIT service restart, and disabled-by-default hub reboot |
+| `binary_sensor` | REST, internet, MQTT, physical-button, and device connectivity |
+| `sensor` | Hub information, device count, device status, RSSI, firmware, and last-received diagnostics |
 
-## Prerequisites
+The complete entity and authority reference is in [Entities](docs/ENTITIES.md).
+Some buttons, switches, covers, locks, and services can cause physical activity.
+Review the target and site conditions before using them.
 
-For the normal installation path, obtain a reachable GRIT REST API base URL and
-a token accepted by the authenticated current-hub API. The OpenAPI documents
-remote-access tokens created by `/api/hub/token` as tokens for API access. The
-integration sends the supplied value only as an `Authorization: Bearer` header;
-it does not send an `auth_token` query parameter.
+## Requirements
 
-An existing MQTT broker must still be reachable from Home Assistant; HACS does
-not install or provide one. Normal setup uses the hub ID and, when available,
-the Ethernet address returned by the API, plus the v0.1.0 connection defaults
-described below. When the API omits the Ethernet address, setup asks only for
-the GRIT Hub LAN hostname or IP address while retaining the discovered hub ID
-and internal defaults. Failed MQTT validation opens the Advanced form.
+- Home Assistant `2026.3.0` or newer.
+- A reachable GRIT API base URL.
+- A raw bearer token accepted by authenticated `GET /api/hub`.
+- A broker reachable from Home Assistant, with access to the discovered GRIT
+  hub topic.
 
-The repository contains one narrowly authorized provisional vendor-default,
-read-only MQTT credential pair, centralized in `const.py`. It is applied only
-when no Advanced credential override is stored, is never displayed or copied
-into a normal config-flow result, and is pending confirmation from GRIT's
-author. This exception does not permit any installation-specific credential or
-any other embedded secret. Use a dedicated least-privilege override when the
-deployment supports one. The API bearer token is never reused for MQTT.
+The minimum Home Assistant version matches `hacs.json` and the local custom
+integration brand-image support used by this repository.
 
-## Installation through HACS
+## Install with HACS
 
-This repository is not in the default HACS catalogue. Once the GitHub
-repository is public, add it as a custom repository:
+This repository is not in the default HACS catalogue. To install it as a HACS
+Custom Repository:
 
-1. Open HACS in Home Assistant.
-2. Open the HACS menu and select **Custom repositories**.
-3. Enter `https://github.com/dionweisler-ux/home-assistant-grit-hub`.
-4. Select **Integration** as the category and add the repository.
-5. Install **GRIT Hub** and restart Home Assistant.
-6. Go to **Settings > Devices & services > Add integration**, search for
-   **GRIT Hub**, and complete the configuration flow.
+1. In HACS, open **Custom repositories**.
+2. After transfer, paste the intended final repository URL:
+   `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`.
+3. Select **Integration** as the category.
+4. Add the repository and install **GRIT Hub**.
+5. Restart Home Assistant.
+6. Go to **Settings > Devices & services > Add integration** and choose
+   **GRIT Hub**.
+
+The GoDeeGo Productions destination is approved but has not yet been transferred
+or operationally verified. Until transfer, use the current repository location;
+publication must use the verified final URL. See the full
+[Installation guide](docs/INSTALLATION.md).
 
 ## Manual installation
 
-1. Download this repository.
+1. Download a trusted copy of this repository.
 2. Copy `custom_components/grit_hub` to
-   `/config/custom_components/grit_hub` in the Home Assistant configuration
-   directory.
+   `/config/custom_components/grit_hub`.
 3. Restart Home Assistant.
-4. Go to **Settings > Devices & services > Add integration**, search for
-   **GRIT Hub**, and complete the configuration flow.
+4. Add **GRIT Hub** from **Settings > Devices & services**.
 
-## Initial configuration
+## Configuration overview
 
-The first page asks only for:
+The normal first page asks only for:
 
-- **GRIT API base URL:** for example `https://your-grit-server.example`. No
-  installation-specific default is included.
-- **GRIT API bearer token:** enter the token value without the `Bearer` prefix.
-- **Verify GRIT API SSL certificate:** keep enabled for a normally trusted HTTPS
-  certificate.
+- GRIT API base URL, such as `https://your-grit-server.example`;
+- the raw bearer token, without a `Bearer ` prefix;
+- whether to verify the API TLS certificate.
 
-Setup performs a deterministic discovery sequence:
+Setup authenticates with `GET /api/hub`, retains its documented 32-character
+hub ID, and uses a valid returned Ethernet address as the MQTT broker. If no
+usable address is returned, setup asks only for the missing LAN hostname or IP
+address. It retains internal defaults: port `1883`, TLS off, certificate
+verification on where applicable, keepalive `60`, default REST interval `30`,
+and the provisional vendor-default read-only MQTT credentials.
 
-1. It validates the supplied bearer token directly against the required
-   authenticated `GET /api/hub` request with a short timeout. A response from
-   the health endpoint is not treated as proof that the token can access the
-   integration API.
-2. It accepts only a valid documented 32-character hexadecimal `id` as the MQTT
-   topic hub ID and a valid `ipAddressEthernet` value as the broker address.
-3. If the broker address is absent or invalid, it retains the discovered hub ID
-   and asks only for the GRIT Hub LAN hostname or IP address. Port 1883, TLS off,
-   certificate verification on, keepalive 60, the REST interval and provisional
-   read-only credentials remain internal defaults.
-4. It makes one bounded connection attempt to the broker. It does not fall back
-   to the public API hostname or inspect other endpoints.
-5. It subscribes at QoS 0 only to
-   `grit/<documented-hub-id>/+/+/#`. A matching successful SUBACK is required;
-   discovery does not wait for a message. If a message arrives during the
-   bounded attempt, its hub segment must exactly match the REST hub ID.
-6. When both values came from REST, it shows the broker and hub ID for
-   confirmation. The credential defaults are not shown or copied into the
-   normal config entry.
+MQTT readiness requires connection, a successful subscribe call, and the exact
+matching successful SUBACK for `grit/<hub-id>/+/+/#`. Setup never publishes,
+scans the network, or creates the entry before validation succeeds. Advanced
+settings provide broker, topic hub ID, credentials, TLS, keepalive, and polling
+overrides. The API token and MQTT password remain secret fields.
 
-If bounded MQTT validation fails or advanced review is selected,
-**Advanced MQTT settings** asks for:
+## Documentation
 
-- REST scan interval;
-- MQTT broker host and port;
-- MQTT topic hub ID;
-- optional MQTT username and password;
-- MQTT TLS and certificate-verification settings;
-- MQTT keepalive.
-
-Discovery never publishes, sends a command, scans addresses or ports, retries
-in the background, or changes the GRIT installation. It stops after the bounded
-attempt and fails closed to manual entry.
-
-After the config entry is created, normal setup still performs an initial REST
-refresh and requires the configured MQTT client to connect and subscribe within
-its bounded readiness timeout. If MQTT is unavailable, Home Assistant keeps the
-entry not ready and retries normal setup later instead of loading partially.
-
-## Reconfiguration and credential rotation
-
-Open **Settings > Devices & services**, select **GRIT Hub**, and use the
-integration's **Reconfigure** action to update API, MQTT or TLS settings. On the
-reconfiguration form:
-
-- leave the API token blank to retain the stored token;
-- leave the MQTT password blank to retain it while the username remains set;
-- clear the MQTT username to clear its stored password as well.
-
-Reloading the config entry after a change stops the old MQTT client before the
-replacement starts. Rotate API and broker credentials at their sources first,
-then reconfigure the entry. Keep a safe independent access method available
-while testing credential changes.
-
-The regular options flow changes only the REST scan interval.
-
-## TLS guidance
-
-Enable TLS whenever MQTT crosses an untrusted network. Certificate verification
-is enabled by default for both HTTPS and MQTT TLS. Disabling verification can
-expose credentials and device state to interception and should be limited to a
-controlled diagnostic situation with a separately verified endpoint. Prefer a
-valid certificate or an appropriately trusted private certificate authority.
-
-## Entities and services
-
-The integration creates a single GRIT Hub device with:
-
-- the system-wide **GRITLock** lock entity;
-- one lock entity for each RFID reader;
-- REST/integration, internet and MQTT connectivity binary sensors;
-- IP address, software version, software branch, status and device-count
-  diagnostics;
-- the optional physical-buttons-disabled diagnostic;
-- a 0-100 system LED brightness control that refreshes and confirms observed
-  state after writing;
-- a GRIT service restart button;
-- a Hub reboot button that is disabled by default.
-
-Discovered equipment retains the existing per-device diagnostics, switches,
-covers, locks, refresh buttons and locate buttons. Gate commands require a fresh
-matching authoritative MQTT observation after the REST command. RFID commands
-require a newer matching strict `state` value from a fresh individual REST read.
-GRITLock commands require a fresh settled MQTT consensus from participating
-triggers. Other switch commands use the existing bounded REST refresh
-confirmation. MQTT remains subscribe-only; all commands use explicit REST
-methods. A GRITLock, RFID or LED request is not reported as confirmed merely
-because its HTTP request completed.
-
-Pre-release development builds exposed RFID readers as switches. They are now
-locks so that Locked means disabled and Unlocked means enabled. The temporary
-RFID switch entities are no longer created; development installations may need
-to remove any orphaned switch registry entries after upgrading.
-
-The bounded `grit_hub.device_command`, `grit_hub.refresh_device` and
-`grit_hub.locate_device` services also remain. Services, buttons, locks, covers
-and switches may cause physical activity. Review the target and site conditions
-before invoking them. There is no arbitrary HTTP endpoint service, shutdown
-button, raw MQTT control, backup/restore control, SSH control or tunnel control.
-
-## State, availability and reconciliation
-
-REST remains authoritative for discovery, static configuration and issuing
-commands. Sanitized MQTT is authoritative for live gate position and
-system-wide GRITLock consensus. An RFID reader's current enabled state comes
-only from the strict top-level boolean `state` returned by
-`GET /api/rfid/{id}`: `true` is enabled/unlocked and `false` is
-disabled/locked. The RFID collection response and its `lockout` field are not
-used as lock state. RFID MQTT `sts` messages may update only bounded diagnostics
-such as online status, firmware and RSSI; their `s` value does not determine the
-lock entity state. Exact RFID MQTT `s` and `st` messages are state-invalidation
-signals only: their `s` and `scr` values are not interpreted, and the coordinator
-instead schedules a coalesced individual REST read after a 250 ms debounce. At
-most one task and one trailing read are retained per reader, with 64 tracked
-readers maximum. These reads share the same four-request concurrency limit and
-generation ordering as periodic and command-confirmation reads. Pending work is
-cancelled on MQTT disconnect or unload, and a fresh command or periodic read may
-satisfy it. Gate state remains Unknown until authoritative live MQTT telemetry
-arrives. RFID state remains Unknown until an individual REST read returns a valid
-matching identity and strict boolean state.
-
-GRITLock uses provisional REST consensus until an exact trigger `/gl` burst has
-settled. Each bounded MQTT generation retains at most the newest observation for
-64 trigger identities. Fresh `gte` participation takes priority over REST
-`gritLockEnabled`; every required participant must have a current-generation
-`gls` observation, and unanimity is required. A prior settled generation may be
-displayed while a new burst is collecting, but an incomplete or contradictory
-settled generation publishes Unknown. Disconnect discards MQTT generations and
-returns to valid provisional REST consensus where available.
-
-After the first successful MQTT subscription and each reconnect, the coordinator
-makes bounded targeted telemetry requests for uniquely identified gates and RFID
-readers through the documented
-`POST /api/device/mesh-telemetry/refresh/{type}/{id}` endpoint. Each request uses
-the existing five-second REST timeout, at most four run concurrently, and the
-whole pass has fixed target, duration and repeat limits. The targeted request
-asks a device to report current telemetry; it does not set state, publish MQTT,
-scan the network or command equipment. Duplicate requests are coalesced, and
-unload or disconnection cancels the active pass.
-
-Every normal coordinator refresh separately reads at most 64 uniquely identified
-RFID readers through `GET /api/rfid/{id}`, with no more than four concurrent
-reads and a bounded batch timeout. This periodic fallback retains the configured
-polling interval, which defaults to 30 seconds. One failed read does not fail the
-integration; the last valid state is retained for that exact reader, or remains
-Unknown if no valid state has been observed. Unload cancels outstanding
-individual reads.
-
-Covers and switches are available only when the last REST update succeeded, the
-MQTT subscription is connected, and the device has not explicitly reported
-itself offline. RFID locks do not depend on the MQTT connection; they are
-unavailable when the last REST update failed or `onlineStatus` is explicitly
-false. An offline RFID reader may retain its last valid state internally but is
-reported unavailable. Reconnection and a successful subscription restore broker
-availability and request fresh gate and RFID diagnostics. The always-available
-MQTT connection diagnostic shows the broker state. RFID lock state represents
-only the reader's enabled or disabled state; the integration does not discover
-or retain individual signed-in users.
-
-The integration does not currently implement per-device MQTT staleness timers.
-A device that stops publishing without reporting offline may therefore retain
-its previous availability between reconciliation polls. MQTT does not infer
-cover movement; only validated position/open values are shown. Devices added
-after setup may require an integration reload before new entities appear.
+- [Installation and removal](docs/INSTALLATION.md)
+- [Entity reference](docs/ENTITIES.md)
+- [Architecture and state authority](docs/ARCHITECTURE.md)
+- [Troubleshooting and safe log redaction](docs/TROUBLESHOOTING.md)
+- [v0.1.0 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.0.md)
+- [Release checklist](docs/RELEASE_CHECKLIST.md)
+- [Changelog](CHANGELOG.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Known limitations
 
-- The API schema and supported GRIT firmware remain experimental. Discovery
-  uses the direct current-hub response from `/api/hub`.
-- Automatic discovery requires a valid `id` from `/api/hub`, plus a successful
-  broker connection and exact subscription. A valid `ipAddressEthernet` is used
-  automatically; otherwise the installer asks for only the missing LAN hostname
-  or IP address. It performs no network scan, port scan or background retry.
-- The bundled read-only MQTT credential defaults are provisional pending
-  confirmation from GRIT's author. Installations that differ must use the
-  Advanced credential overrides.
-- Normal setup uses MQTT port 1883 without TLS. Deployments requiring a
-  different port or TLS must use Advanced settings.
-- One config entry represents one configured API and MQTT hub identity;
-  multi-hub behaviour has not been redesigned or broadly validated.
-- Direct MQTT is mandatory for setup and live controllable-entity availability;
-  REST-only deployments are not supported by the current runtime.
-- MQTT uses QoS 0, so delivery is not guaranteed.
-- Dynamic entity addition and removal is not implemented.
-- There is no per-device MQTT staleness timeout or cover movement inference.
-- The imported/generated endpoint catalogue in `const.py` remains broad and may
-  contain duplicated or unused routes.
-- The repository is not part of Home Assistant Core or the default HACS
-  catalogue.
+- This is an experimental custom integration, not Home Assistant Core and not a
+  default HACS catalogue entry.
+- Direct MQTT readiness is mandatory; REST-only operation is not supported.
+- The provisional read-only MQTT defaults are pending confirmation from GRIT's
+  author. Installations that differ must use Advanced overrides.
+- MQTT is QoS 0 and has no per-device staleness timer.
+- One config entry represents one API and MQTT hub identity; multi-hub behavior
+  has not been broadly validated.
+- Dynamic device entity addition and removal requires an integration reload.
+- Gate state has no unproven REST fallback. RFID state comes from individual
+  REST detail, not collection state or MQTT payload values.
+- Collector-grade transition confirmation does not apply to solenoid, latch, or
+  powerbank switches.
+- The imported/generated endpoint catalogue remains broad and contains routes
+  not used by the integration.
 
-## Troubleshooting
+## Privacy and security
 
-- **Integration does not appear:** confirm the directory is exactly
-  `/config/custom_components/grit_hub`, restart Home Assistant and refresh the
-  browser.
-- **Setup asks for a broker address:** `/api/hub` returned a valid hub ID but no
-  valid Ethernet address. Enter the GRIT Hub LAN hostname or IP address; setup
-  does not scan the network.
-- **Automatic discovery opens Advanced:** the bounded broker validation failed.
-  Check the broker settings; discovery does not scan or retry in the background.
-- **Entry remains not ready:** verify both the REST API and MQTT broker are
-  reachable from Home Assistant. MQTT must connect and subscribe during setup.
-- **REST connection fails:** check the API base URL, network path and
-  certificate-verification setting. Use a GRIT API token accepted by
-  `GET /api/hub`, enter its value without a `Bearer` prefix, and do not enter
-  an `auth_token` query parameter or browser redirect URL.
-- **MQTT connection fails:** check broker host, port, credentials, listener
-  protocol, firewall rules, hub ID and TLS settings. HACS does not provide the
-  broker.
-- **TLS fails:** confirm the hostname matches the certificate and that Home
-  Assistant trusts its issuing certificate authority. Avoid disabling
-  verification as a permanent fix.
-- **Entities are missing:** verify the devices are returned by the GRIT API,
-  then reload the integration after discovery.
-- **Live entities become unavailable:** check the MQTT Connection diagnostic.
-  The last state is intentionally retained during broker loss.
-- **Commands do not work:** stop repeated attempts if equipment may move. Check
-  the physical site independently before further testing.
+Config entries and protected backups may contain API and MQTT secrets. Never
+share `.storage`, backups, databases, raw API or MQTT payloads, unredacted logs,
+private addresses, hub/device identifiers, or customer and personal data.
+Runtime data and entity attributes use bounded allowlists; raw REST and MQTT
+objects are not exposed as entity attributes. The integration has no Home
+Assistant diagnostics-download implementation.
 
-When sharing logs, issue reports or screenshots, remove credentials, broker and
-API addresses, hub/device identifiers, customer information and payload data.
-Do not attach Home Assistant diagnostics or backups without reviewing them.
+Read [Security](SECURITY.md) before reporting a security issue. The approved
+channel is GitHub Private Vulnerability Reporting through **Security > Report a
+vulnerability**. It must be enabled and verified before publication; never place
+vulnerability details or installation data in a public issue.
 
-## Privacy, secrets and backups
+## Support and contributing
 
-Home Assistant stores the API token, endpoint settings and any Advanced MQTT
-credential override in the config entry, so protected backups may contain them.
-The narrowly authorized provisional read-only MQTT defaults live only in
-`const.py`; normal setup does not copy them into the config entry, entities,
-diagnostics or coordinator data. Protect backups accordingly and rotate
-installation credentials after suspected exposure. Never commit `.storage`,
-logs, databases, diagnostics, cookies, tokens or site configuration to this
-repository.
-
-## Removal
-
-Remove the GRIT Hub config entry from **Settings > Devices & services**, remove
-the integration through HACS (or delete the manual
-`custom_components/grit_hub` copy), and restart Home Assistant. Removing the
-integration does not revoke API or MQTT credentials; revoke or rotate them at
-the GRIT API and broker if they are no longer needed.
-
-## Contributing
-
-Focused pull requests and reproducible bug reports are welcome. Preserve
-existing behaviour unless a change is explicitly justified, keep changes small,
-and use deterministic mocked tests for API, MQTT and command paths. Automated
-tests must never contact a live system or actuate equipment. Never include
-credentials, private installation details, customer data, diagnostic payloads
-or live-equipment test results that could identify a site.
+For a reproducible bug, use the repository bug-report form and include versions,
+installation method, affected entity, expected and actual behavior, restart
+behavior, and only redacted log lines. General protocol changes require evidence
+for both states and both transitions, plus deterministic network-free tests.
+See [Contributing](CONTRIBUTING.md).
 
 ## Licence
 
-This project is licensed under the [MIT License](LICENSE).
-
-The included icon is a temporary neutral project asset. It contains no vendor
-logo or text and may be replaced later with an original project identity.
+Licensed under the approved [MIT License](LICENSE). The included icon is a temporary,
+neutral project asset with no vendor logo or text.
