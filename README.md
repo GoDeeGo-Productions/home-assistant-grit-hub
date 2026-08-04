@@ -223,9 +223,16 @@ only from the strict top-level boolean `state` returned by
 disabled/locked. The RFID collection response and its `lockout` field are not
 used as lock state. RFID MQTT `sts` messages may update only bounded diagnostics
 such as online status, firmware and RSSI; their `s` value does not determine the
-lock entity state. Gate state remains Unknown until authoritative live MQTT
-telemetry arrives. RFID state remains Unknown until an individual REST read
-returns a valid matching identity and strict boolean state.
+lock entity state. Exact RFID MQTT `s` and `st` messages are state-invalidation
+signals only: their `s` and `scr` values are not interpreted, and the coordinator
+instead schedules a coalesced individual REST read after a 250 ms debounce. At
+most one task and one trailing read are retained per reader, with 64 tracked
+readers maximum. These reads share the same four-request concurrency limit and
+generation ordering as periodic and command-confirmation reads. Pending work is
+cancelled on MQTT disconnect or unload, and a fresh command or periodic read may
+satisfy it. Gate state remains Unknown until authoritative live MQTT telemetry
+arrives. RFID state remains Unknown until an individual REST read returns a valid
+matching identity and strict boolean state.
 
 GRITLock uses provisional REST consensus until an exact trigger `/gl` burst has
 settled. Each bounded MQTT generation retains at most the newest observation for
@@ -248,9 +255,11 @@ unload or disconnection cancels the active pass.
 
 Every normal coordinator refresh separately reads at most 64 uniquely identified
 RFID readers through `GET /api/rfid/{id}`, with no more than four concurrent
-reads and a bounded batch timeout. One failed read does not fail the integration;
-the last valid state is retained for that exact reader, or remains Unknown if no
-valid state has been observed. Unload cancels outstanding individual reads.
+reads and a bounded batch timeout. This periodic fallback retains the configured
+polling interval, which defaults to 30 seconds. One failed read does not fail the
+integration; the last valid state is retained for that exact reader, or remains
+Unknown if no valid state has been observed. Unload cancels outstanding
+individual reads.
 
 Covers and switches are available only when the last REST update succeeded, the
 MQTT subscription is connected, and the device has not explicitly reported

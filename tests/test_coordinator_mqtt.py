@@ -1327,6 +1327,16 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.wait_for(wait_loop(), timeout=1)
 
+    async def wait_for_rfid_event_idle(self, instance):
+        async def wait_loop():
+            for _attempt in range(200):
+                if not instance._rfid_event_tasks:
+                    return
+                await asyncio.sleep(0)
+            self.fail("RFID event refresh did not become idle")
+
+        await asyncio.wait_for(wait_loop(), timeout=1)
+
     async def test_startup_individual_rest_hydrates_rfid_state(self):
         api = FakeApi(
             {
@@ -2381,15 +2391,21 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         instance = self.coordinator(api)
         instance.set_mqtt_connected(True)
 
-        self.assertFalse(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "rfid",
-                "device-rfid",
-                "st",
-                {"state": True},
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "st",
+                    {"state": True},
+                )
             )
-        )
+            await self.wait_for_rfid_event_idle(instance)
         self.assertFalse(
             await instance.async_confirm_device_state(
                 "rfid",
@@ -2469,6 +2485,566 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             for waiter in existing:
                 waiter.cancel()
             instance._mqtt_state_waiters.clear()
+
+    async def test_exact_rfid_s_and_st_schedule_authoritative_refresh(self):
+        for message_type in ("s", "st"):
+            with self.subTest(message_type=message_type):
+                api = FakeApi()
+                api.rfid_details["device-rfid"] = {
+                    "id": "device-rfid",
+                    "state": False,
+                    "onlineStatus": True,
+                }
+                instance = self.coordinator(api)
+                reader = instance.data["devices"]["rfid"][0]
+                reader[coordinator_module.RFID_ENABLED_KEY] = True
+                reader[coordinator_module.RFID_STATE_GENERATION_KEY] = 7
+                instance._rfid_state_request_sequence = 7
+                instance.set_mqtt_connected(True)
+                payload = {
+                    "s": 1,
+                    "scr": "FABRICATED_ACTIVITY",
+                }
+                if message_type == "st":
+                    payload["rssi"] = -57
+
+                with mock.patch.object(
+                    coordinator_module,
+                    "_RFID_EVENT_DEBOUNCE",
+                    0,
+                ):
+                    self.assertTrue(
+                        instance.handle_mqtt_message(
+                            "hub-expected",
+                            "rfid",
+                            "device-rfid",
+                            message_type,
+                            payload,
+                        )
+                    )
+                    self.assertEqual(len(instance._rfid_event_tasks), 1)
+                    self.assertTrue(instance.rfid_enabled("device-rfid"))
+                    self.assertEqual(
+                        instance.rfid_state_generation("device-rfid"),
+                        7,
+                    )
+                    self.assertNotIn("FABRICATED_ACTIVITY", repr(instance.data))
+                    if message_type == "st":
+                        state = instance.data["devices"]["rfid"][0][
+                            coordinator_module.MQTT_STATE_KEY
+                        ]
+                        self.assertEqual(state["rssi"], -57)
+                    await self.wait_for_rfid_event_idle(instance)
+
+                self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
+                self.assertFalse(instance.rfid_enabled("device-rfid"))
+                self.assertGreater(
+                    instance.rfid_state_generation("device-rfid"),
+                    7,
+                )
+                self.assertGreaterEqual(len(instance.updated_data), 1)
+
+    async def test_malformed_ordering_does_not_suppress_rfid_invalidation(self):
+        api = FakeApi()
+        api.rfid_details["device-rfid"] = {
+            "id": "device-rfid",
+            "state": False,
+        }
+        instance = self.coordinator(api)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "s",
+                    {"s": 1, "seq": "invalid"},
+                )
+            )
+            await self.wait_for_rfid_event_idle(instance)
+
+        self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
+        self.assertFalse(instance.rfid_enabled("device-rfid"))
+
+    async def test_rfid_sts_and_nonexact_types_do_not_schedule_event_refresh(self):
+        instance = self.coordinator(FakeApi())
+        instance.set_mqtt_connected(True)
+
+        self.assertTrue(
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "rfid",
+                "device-rfid",
+                "sts",
+                {"s": 0, "sts": 1, "rssi": -60},
+            )
+        )
+        self.assertTrue(
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "rfid",
+                "device-rfid",
+                "st/detail",
+                {"rssi": -59},
+            )
+        )
+        self.assertEqual(instance._rfid_event_tasks, {})
+        self.assertEqual(instance.api.rfid_detail_calls, [])
+
+    async def test_rfid_s_and_st_within_debounce_are_coalesced(self):
+        api = FakeApi()
+        instance = self.coordinator(api)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            for message_type in ("s", "st", "s", "st"):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "rfid",
+                        "device-rfid",
+                        message_type,
+                        {"s": 0, "scr": "FABRICATED_ACTIVITY"},
+                    )
+                )
+            self.assertEqual(len(instance._rfid_event_tasks), 1)
+            self.assertEqual(api.rfid_detail_calls, [])
+            await self.wait_for_rfid_event_idle(instance)
+
+        self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
+        self.assertEqual(instance._rfid_event_tasks, {})
+
+    async def test_rfid_event_during_inflight_read_adds_only_one_trailing_read(self):
+        api = FakeApi()
+        api.rfid_detail_entered = asyncio.Event()
+        api.rfid_detail_release = asyncio.Event()
+        instance = self.coordinator(api)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "s",
+                    {"s": 0},
+                )
+            )
+            await asyncio.wait_for(api.rfid_detail_entered.wait(), timeout=1)
+            for message_type in ("st", "s", "st"):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "rfid",
+                        "device-rfid",
+                        message_type,
+                        {"s": 1},
+                    )
+                )
+            self.assertEqual(len(instance._rfid_event_tasks), 1)
+            self.assertEqual(
+                instance._rfid_event_trailing,
+                {"device-rfid"},
+            )
+            api.rfid_detail_release.set()
+            await self.wait_for_rfid_event_idle(instance)
+
+        self.assertEqual(
+            api.rfid_detail_calls,
+            ["device-rfid", "device-rfid"],
+        )
+        self.assertEqual(instance._rfid_event_tasks, {})
+
+    async def test_rfid_event_entry_limit_fails_closed(self):
+        devices = _device_map()
+        devices["rfid"] = [
+            {"id": f"reader-{index:03d}"} for index in range(65)
+        ]
+        instance = self.coordinator(FakeApi(), devices)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            10,
+        ):
+            results = [
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    f"reader-{index:03d}",
+                    "s",
+                    {"s": 0},
+                )
+                for index in range(65)
+            ]
+            self.assertEqual(results[:64], [True] * 64)
+            self.assertFalse(results[64])
+            self.assertEqual(
+                len(instance._rfid_event_tasks),
+                coordinator_module._MAX_RFID_EVENT_REFRESHES,
+            )
+            tasks = tuple(instance._rfid_event_tasks.values())
+            self.assertTrue(instance.set_mqtt_connected(False))
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        self.assertEqual(instance._rfid_event_tasks, {})
+        self.assertEqual(instance._rfid_event_in_flight, set())
+        self.assertEqual(instance._rfid_event_trailing, set())
+        self.assertEqual(instance.api.rfid_detail_calls, [])
+
+    async def test_failed_rfid_event_read_preserves_or_leaves_unknown_state(self):
+        for prior_enabled in (True, None):
+            with self.subTest(prior_enabled=prior_enabled):
+                api = FakeApi()
+                api.rfid_detail_errors.add("device-rfid")
+                instance = self.coordinator(api)
+                if prior_enabled is not None:
+                    reader = instance.data["devices"]["rfid"][0]
+                    reader[coordinator_module.RFID_ENABLED_KEY] = prior_enabled
+                    reader[coordinator_module.RFID_STATE_GENERATION_KEY] = 3
+                instance.set_mqtt_connected(True)
+
+                with mock.patch.object(
+                    coordinator_module,
+                    "_RFID_EVENT_DEBOUNCE",
+                    0,
+                ):
+                    self.assertTrue(
+                        instance.handle_mqtt_message(
+                            "hub-expected",
+                            "rfid",
+                            "device-rfid",
+                            "s",
+                            {"s": 0, "scr": "FABRICATED_ACTIVITY"},
+                        )
+                    )
+                    await self.wait_for_rfid_event_idle(instance)
+
+                self.assertIs(
+                    instance.rfid_enabled("device-rfid"),
+                    prior_enabled,
+                )
+                self.assertEqual(api.rfid_detail_calls, ["device-rfid"])
+
+    async def test_event_reads_share_global_rfid_concurrency_limit(self):
+        devices = _device_map()
+        devices["rfid"] = [
+            {"id": f"reader-{index}"} for index in range(5)
+        ]
+        api = FakeApi()
+        api.rfid_detail_release = asyncio.Event()
+        instance = self.coordinator(api, devices)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            for index in range(4):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "rfid",
+                        f"reader-{index}",
+                        "s",
+                        {"s": 0},
+                    )
+                )
+
+            async def wait_for_four_reads():
+                for _attempt in range(100):
+                    if api.rfid_detail_active == 4:
+                        return
+                    await asyncio.sleep(0)
+                self.fail("event reads did not reach concurrency bound")
+
+            await asyncio.wait_for(wait_for_four_reads(), timeout=1)
+            confirmation = asyncio.create_task(
+                instance.async_confirm_rfid_state(
+                    "reader-4",
+                    False,
+                    after_generation=0,
+                    timeout=0.5,
+                )
+            )
+            for _attempt in range(10):
+                await asyncio.sleep(0)
+            self.assertEqual(api.rfid_detail_active, 4)
+            self.assertEqual(len(api.rfid_detail_calls), 4)
+            api.rfid_detail_release.set()
+            self.assertTrue(await asyncio.wait_for(confirmation, timeout=1))
+            await self.wait_for_rfid_event_idle(instance)
+
+        self.assertEqual(api.rfid_detail_max_active, 4)
+        self.assertEqual(len(api.rfid_detail_calls), 5)
+        self.assertEqual(api.rfid_detail_active, 0)
+
+    async def test_older_event_read_cannot_overwrite_newer_command_read(self):
+        class OrderedApi(FakeApi):
+            def __init__(self):
+                super().__init__()
+                self.first_entered = asyncio.Event()
+                self.first_release = asyncio.Event()
+                self.calls = 0
+
+            async def get_rfid_device(self, device_id):
+                self.rfid_detail_calls.append(str(device_id))
+                self.calls += 1
+                if self.calls == 1:
+                    self.first_entered.set()
+                    await self.first_release.wait()
+                    return {"id": device_id, "state": False}
+                return {"id": device_id, "state": True}
+
+        api = OrderedApi()
+        instance = self.coordinator(api)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "s",
+                    {"s": 0},
+                )
+            )
+            await asyncio.wait_for(api.first_entered.wait(), timeout=1)
+            self.assertTrue(
+                await instance.async_confirm_rfid_state(
+                    "device-rfid",
+                    True,
+                    after_generation=0,
+                    timeout=0.2,
+                )
+            )
+            newer_generation = instance.rfid_state_generation("device-rfid")
+            api.first_release.set()
+            await self.wait_for_rfid_event_idle(instance)
+
+        self.assertTrue(instance.rfid_enabled("device-rfid"))
+        self.assertEqual(
+            instance.rfid_state_generation("device-rfid"),
+            newer_generation,
+        )
+        self.assertEqual(
+            api.rfid_detail_calls,
+            ["device-rfid", "device-rfid"],
+        )
+
+    async def test_mqtt_disconnect_cancels_pending_rfid_event_refresh(self):
+        instance = self.coordinator(FakeApi())
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            10,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "s",
+                    {"s": 0},
+                )
+            )
+            tasks = tuple(instance._rfid_event_tasks.values())
+            self.assertTrue(instance.set_mqtt_connected(False))
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        self.assertEqual(instance._rfid_event_tasks, {})
+        self.assertEqual(instance._rfid_event_in_flight, set())
+        self.assertEqual(instance._rfid_event_trailing, set())
+        self.assertEqual(instance.api.rfid_detail_calls, [])
+
+    async def test_unload_cancels_pending_and_inflight_rfid_event_refreshes(self):
+        devices = _device_map()
+        devices["rfid"] = [
+            {"id": "reader-inflight"},
+            {"id": "reader-pending"},
+        ]
+        api = FakeApi()
+        api.rfid_detail_entered = asyncio.Event()
+        api.rfid_detail_release = asyncio.Event()
+        instance = self.coordinator(api, devices)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "reader-inflight",
+                    "s",
+                    {"s": 0},
+                )
+            )
+            await asyncio.wait_for(api.rfid_detail_entered.wait(), timeout=1)
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            10,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "reader-pending",
+                    "st",
+                    {"s": 1},
+                )
+            )
+            await asyncio.wait_for(
+                instance.async_stop_state_reconciliation(),
+                timeout=1,
+            )
+
+        self.assertEqual(api.rfid_detail_cancelled, 1)
+        self.assertEqual(api.rfid_detail_active, 0)
+        self.assertEqual(instance._rfid_event_tasks, {})
+        self.assertEqual(instance._rfid_event_in_flight, set())
+        self.assertEqual(instance._rfid_event_trailing, set())
+        self.assertEqual(instance._rfid_read_tasks, set())
+
+    async def test_command_confirmation_satisfies_pending_rfid_events(self):
+        instance = self.coordinator(FakeApi())
+        reader = instance.data["devices"]["rfid"][0]
+        reader[coordinator_module.RFID_ENABLED_KEY] = True
+        reader[coordinator_module.RFID_STATE_GENERATION_KEY] = 1
+        instance._rfid_state_request_sequence = 1
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            10,
+        ):
+            for message_type in ("s", "st"):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "rfid",
+                        "device-rfid",
+                        message_type,
+                        {"s": 0, "scr": "FABRICATED_ACTIVITY"},
+                    )
+                )
+            tasks = tuple(instance._rfid_event_tasks.values())
+            self.assertTrue(
+                await instance.async_confirm_rfid_state(
+                    "device-rfid",
+                    False,
+                    after_generation=1,
+                    timeout=0.2,
+                )
+            )
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        self.assertFalse(instance.rfid_enabled("device-rfid"))
+        self.assertEqual(
+            instance.api.rfid_detail_calls,
+            ["device-rfid"],
+        )
+        self.assertEqual(instance._rfid_event_tasks, {})
+        self.assertEqual(instance._rfid_event_trailing, set())
+
+    async def test_reconnect_replaces_cancelled_rfid_event_refresh(self):
+        api = FakeApi()
+        api.rfid_detail_entered = asyncio.Event()
+        api.rfid_detail_release = asyncio.Event()
+        instance = self.coordinator(api)
+        instance.set_mqtt_connected(True)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_RFID_EVENT_DEBOUNCE",
+            0,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "s",
+                    {"s": 0},
+                )
+            )
+            cancelled_task = instance._rfid_event_tasks["device-rfid"]
+            self.assertTrue(instance.set_mqtt_connected(False))
+            self.assertTrue(cancelled_task.cancelling())
+            self.assertTrue(instance.set_mqtt_connected(True))
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "st",
+                    {"s": 1},
+                )
+            )
+            replacement_task = instance._rfid_event_tasks["device-rfid"]
+            self.assertIsNot(replacement_task, cancelled_task)
+            await asyncio.wait_for(api.rfid_detail_entered.wait(), timeout=1)
+            instance._finish_rfid_event_refresh(
+                "device-rfid", cancelled_task
+            )
+            self.assertEqual(
+                instance._rfid_event_in_flight,
+                {"device-rfid"},
+            )
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "rfid",
+                    "device-rfid",
+                    "s",
+                    {"s": 0},
+                )
+            )
+            self.assertEqual(
+                instance._rfid_event_trailing,
+                {"device-rfid"},
+            )
+            api.rfid_detail_release.set()
+            await asyncio.gather(cancelled_task, return_exceptions=True)
+            await self.wait_for_rfid_event_idle(instance)
+
+        self.assertEqual(
+            instance.api.rfid_detail_calls,
+            ["device-rfid", "device-rfid"],
+        )
+        self.assertEqual(instance._rfid_event_tasks, {})
 
     async def test_rfid_detail_reads_match_only_exact_unique_ids(self):
         api = FakeApi(
@@ -2717,6 +3293,8 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             instance.data = refreshed
             await asyncio.sleep(0)
 
+        self.assertEqual(instance.update_interval.total_seconds(), 30)
+        self.assertEqual(api.rfid_detail_calls, ["device-rfid", "device-rfid"])
         self.assertEqual(api.telemetry_calls, [])
         self.assertIsNone(instance._reconciliation_task)
         await instance.async_stop_state_reconciliation()
