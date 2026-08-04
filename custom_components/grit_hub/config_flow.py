@@ -654,14 +654,18 @@ class GritHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "cannot_connect"
                 else:
                     if await self._async_validate_mqtt(normalized):
+                        self.hass.config_entries.async_update_entry(
+                            entry,
+                            options={
+                                **entry.options,
+                                CONF_SCAN_INTERVAL: normalized[
+                                    CONF_SCAN_INTERVAL
+                                ],
+                            },
+                        )
                         return self.async_update_reload_and_abort(
                             entry,
                             data_updates=normalized,
-                            options_updates={
-                                CONF_SCAN_INTERVAL: normalized[
-                                    CONF_SCAN_INTERVAL
-                                ]
-                            },
                         )
                     errors["base"] = "mqtt_cannot_connect"
 

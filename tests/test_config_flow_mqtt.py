@@ -87,11 +87,35 @@ class FakeEntry:
     def __init__(self, data, options=None):
         self.data = deepcopy(data)
         self.options = deepcopy(options or {})
+        self.entry_id = "fabricated-entry-id"
+        self.unique_id = "fabricated-stable-identity"
+        self.entity_id = "lock.fabricated_reader"
+        self.device_id = "fabricated-device-registry-id"
+
+
+class FakeConfigEntries:
+    def __init__(self):
+        self.update_calls = []
+        self.reload_calls = []
+
+    def async_update_entry(self, entry, *, data=None, options=None):
+        self.update_calls.append(
+            {
+                "entry": entry,
+                "data": deepcopy(data),
+                "options": deepcopy(options),
+            }
+        )
+        if data is not None:
+            entry.data = deepcopy(data)
+        if options is not None:
+            entry.options = deepcopy(options)
 
 
 class FakeHass:
     def __init__(self):
         self.executor_calls = []
+        self.config_entries = FakeConfigEntries()
 
     async def async_add_executor_job(self, function, *args):
         self.executor_calls.append((function, args))
@@ -148,10 +172,12 @@ class ConfigFlow(_FlowBase):
         entry,
         *,
         data_updates,
-        options_updates,
     ):
-        entry.data.update(deepcopy(data_updates))
-        entry.options.update(deepcopy(options_updates))
+        self.hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, **deepcopy(data_updates)},
+        )
+        self.hass.config_entries.reload_calls.append(entry.entry_id)
         self.updated_entries.append(entry)
         return {"type": "abort", "reason": "reconfigure_successful"}
 
@@ -1070,6 +1096,7 @@ class ConfigFlowMqttTests(unittest.TestCase):
     def test_reconfigure_401_preserves_entry_and_exposes_no_secret(self):
         entry = self.existing_entry()
         original_data = deepcopy(entry.data)
+        original_options = deepcopy(entry.options)
         user_input = self.reconfigure_input(entry)
         rejected_token = "fabricated-rejected-token"
         user_input[FLOW_MODULE.CONF_TOKEN] = rejected_token
@@ -1081,7 +1108,10 @@ class ConfigFlowMqttTests(unittest.TestCase):
         self.assertEqual(result["step_id"], "reconfigure")
         self.assertEqual(result["errors"], {"base": "invalid_auth"})
         self.assertEqual(entry.data, original_data)
+        self.assertEqual(entry.options, original_options)
         self.assertEqual(flow.updated_entries, [])
+        self.assertEqual(flow.hass.config_entries.update_calls, [])
+        self.assertEqual(flow.hass.config_entries.reload_calls, [])
         self.assertEqual(FakeApi.hub_calls, 1)
         self.assertEqual(self.probe_calls, [])
         self.assertNotIn(rejected_token, repr(result))
@@ -1134,6 +1164,157 @@ class ConfigFlowMqttTests(unittest.TestCase):
         self.assertEqual(entry.data[FLOW_MODULE.CONF_MQTT_PORT], 8883)
         self.assertEqual(len(flow.updated_entries), 1)
         self.assertEqual(flow.created_entries, [])
+
+    def test_reconfigure_uses_supported_helper_and_reloads_exactly_once(self):
+        entry = self.existing_entry()
+        entry.options["fabricated_unrelated_option"] = "preserved"
+        original_entry_id = entry.entry_id
+        original_unique_id = entry.unique_id
+        original_entity_id = entry.entity_id
+        original_device_id = entry.device_id
+        mqtt_fields = (
+            FLOW_MODULE.CONF_MQTT_HOST,
+            FLOW_MODULE.CONF_MQTT_PORT,
+            FLOW_MODULE.CONF_MQTT_HUB_ID,
+            FLOW_MODULE.CONF_MQTT_USERNAME,
+            FLOW_MODULE.CONF_MQTT_PASSWORD,
+            FLOW_MODULE.CONF_MQTT_USE_TLS,
+            FLOW_MODULE.CONF_MQTT_VERIFY_TLS,
+            FLOW_MODULE.CONF_MQTT_KEEPALIVE,
+        )
+        original_mqtt = {
+            field: entry.data[field] for field in mqtt_fields
+        }
+        replacement_token = "fabricated-supported-helper-token"
+        user_input = self.reconfigure_input(entry)
+        user_input[FLOW_MODULE.CONF_TOKEN] = replacement_token
+
+        flow, result = self.reconfigure(entry, user_input)
+
+        self.assertEqual(result["type"], "abort")
+        self.assertEqual(result["reason"], "reconfigure_successful")
+        self.assertEqual(entry.data[FLOW_MODULE.CONF_TOKEN], replacement_token)
+        self.assertEqual(FakeApi.constructor_tokens, [replacement_token])
+        self.assertEqual(
+            {field: entry.data[field] for field in mqtt_fields},
+            original_mqtt,
+        )
+        self.assertEqual(entry.entry_id, original_entry_id)
+        self.assertEqual(entry.unique_id, original_unique_id)
+        self.assertEqual(entry.entity_id, original_entity_id)
+        self.assertEqual(entry.device_id, original_device_id)
+        self.assertEqual(entry.options[FLOW_MODULE.CONF_SCAN_INTERVAL], 45)
+        self.assertEqual(
+            entry.options["fabricated_unrelated_option"],
+            "preserved",
+        )
+        self.assertEqual(flow.created_entries, [])
+        self.assertEqual(flow.updated_entries, [entry])
+        self.assertEqual(
+            flow.hass.config_entries.reload_calls,
+            [entry.entry_id],
+        )
+        self.assertEqual(len(flow.hass.config_entries.update_calls), 2)
+        options_call, data_call = flow.hass.config_entries.update_calls
+        self.assertIs(options_call["entry"], entry)
+        self.assertIsNone(options_call["data"])
+        self.assertEqual(options_call["options"], entry.options)
+        self.assertIs(data_call["entry"], entry)
+        self.assertIsNone(data_call["options"])
+        self.assertEqual(
+            data_call["data"][FLOW_MODULE.CONF_TOKEN],
+            replacement_token,
+        )
+
+    def test_reconfigure_changed_scan_interval_updates_option_once(self):
+        entry = self.existing_entry()
+        entry.options["fabricated_unrelated_option"] = "preserved"
+        user_input = self.reconfigure_input(entry)
+        user_input[FLOW_MODULE.CONF_SCAN_INTERVAL] = 90
+
+        flow, result = self.reconfigure(entry, user_input)
+
+        self.assertEqual(result["reason"], "reconfigure_successful")
+        self.assertEqual(entry.options[FLOW_MODULE.CONF_SCAN_INTERVAL], 90)
+        self.assertEqual(entry.data[FLOW_MODULE.CONF_SCAN_INTERVAL], 90)
+        self.assertEqual(
+            entry.options["fabricated_unrelated_option"],
+            "preserved",
+        )
+        self.assertEqual(
+            flow.hass.config_entries.reload_calls,
+            [entry.entry_id],
+        )
+
+    def test_reconfigure_mqtt_failure_changes_nothing_and_does_not_reload(self):
+        entry = self.existing_entry()
+        entry.options["fabricated_unrelated_option"] = "preserved"
+        original_data = deepcopy(entry.data)
+        original_options = deepcopy(entry.options)
+        self.probe_result = types.SimpleNamespace(
+            connected=False,
+            hub_id=None,
+            ambiguous=False,
+        )
+
+        flow, result = self.reconfigure(
+            entry,
+            self.reconfigure_input(entry),
+        )
+
+        self.assertEqual(result["step_id"], "reconfigure")
+        self.assertEqual(result["errors"], {"base": "mqtt_cannot_connect"})
+        self.assertEqual(entry.data, original_data)
+        self.assertEqual(entry.options, original_options)
+        self.assertEqual(flow.updated_entries, [])
+        self.assertEqual(flow.hass.config_entries.update_calls, [])
+        self.assertEqual(flow.hass.config_entries.reload_calls, [])
+        self.assertEqual(len(self.probe_calls), 1)
+
+    def test_reconfigure_unexpected_api_error_is_bounded_without_mutation(self):
+        entry = self.existing_entry()
+        original_data = deepcopy(entry.data)
+        original_options = deepcopy(entry.options)
+
+        with mock.patch.object(
+            FakeApi,
+            "get_hub",
+            mock.AsyncMock(side_effect=RuntimeError("fabricated failure")),
+        ):
+            flow, result = self.reconfigure(
+                entry,
+                self.reconfigure_input(entry),
+            )
+
+        self.assertEqual(result["step_id"], "reconfigure")
+        self.assertEqual(result["errors"], {"base": "cannot_connect"})
+        self.assertEqual(entry.data, original_data)
+        self.assertEqual(entry.options, original_options)
+        self.assertEqual(flow.updated_entries, [])
+        self.assertEqual(flow.hass.config_entries.update_calls, [])
+        self.assertEqual(flow.hass.config_entries.reload_calls, [])
+        self.assertEqual(self.probe_calls, [])
+
+    def test_scan_interval_options_flow_remains_available(self):
+        entry = self.existing_entry()
+        flow = FLOW_MODULE.GritHubOptionsFlow(entry)
+        flow.created_entries = []
+
+        result = _run_immediate(flow.async_step_init())
+        fields = _schema_fields(result["data_schema"])
+        self.assertEqual(
+            fields[FLOW_MODULE.CONF_SCAN_INTERVAL][0].default,
+            45,
+        )
+
+        result = _run_immediate(
+            flow.async_step_init({FLOW_MODULE.CONF_SCAN_INTERVAL: 75})
+        )
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(
+            result["data"],
+            {FLOW_MODULE.CONF_SCAN_INTERVAL: 75},
+        )
 
     def test_reconfigure_result_and_logs_exclude_supplied_secrets(self):
         entry = self.existing_entry()
