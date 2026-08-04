@@ -83,7 +83,7 @@ This repository is not in the default HACS catalogue. To install it as a HACS
 Custom Repository:
 
 1. In HACS, open **Custom repositories**.
-2. After transfer, paste the intended final repository URL:
+2. Paste the verified final repository URL:
    `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`.
 3. Select **Integration** as the category.
 4. Add the repository and install **GRIT Hub**.
@@ -91,10 +91,10 @@ Custom Repository:
 6. Go to **Settings > Devices & services > Add integration** and choose
    **GRIT Hub**.
 
-The GoDeeGo Productions destination is approved but has not yet been transferred
-or operationally verified. Until transfer, use the current repository location;
-publication must use the verified final URL. See the full
-[Installation guide](docs/INSTALLATION.md).
+The repository transfer to GoDeeGo Productions and the final URL are verified.
+`v0.1.0` remains a release candidate and has not been published; HACS acceptance
+against the final URL remains a release task. See the full [Installation
+guide](docs/INSTALLATION.md).
 
 ## Manual installation
 

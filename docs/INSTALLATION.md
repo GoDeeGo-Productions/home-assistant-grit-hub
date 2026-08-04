@@ -24,10 +24,10 @@ safety or security validation.
 6. Open **Settings > Devices & services > Add integration** and select
    **GRIT Hub**.
 
-The approved post-transfer destination is GoDeeGo Productions at
-`https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`. The transfer
-and final-URL verification remain pending, so use the URL shown in the browser
-for the repository you currently intend to trust.
+The repository has been transferred to GoDeeGo Productions and its verified
+final URL is
+`https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`. Use that exact
+URL and verify it in the browser before trusting an archive or installation.
 
 ## Manual installation
 

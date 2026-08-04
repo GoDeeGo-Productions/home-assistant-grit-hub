@@ -1,34 +1,34 @@
 # Repository transfer guide
 
-The approved public owner is **GoDeeGo Productions**, using the intended GitHub
-namespace `GoDeeGo-Productions`. The intended final repository URL is:
+The repository owner is **GoDeeGo Productions**, using the GitHub namespace
+`GoDeeGo-Productions`. The verified final repository URL is:
 
 `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`
 
-These are approved owner decisions, not evidence that the organization,
-destination repository, transfer, or final URL is operational. This guide does
-not authorize or perform those actions.
+The organization/destination exists, the transfer is complete, and the final URL
+and local `origin` have been verified. This guide records those completed facts
+and the remaining post-transfer work; it does not claim a public release.
 
 ## 1. Prerequisites
 
-The organization display name, intended namespace and URL, MIT licence, and
-GitHub Private Vulnerability Reporting channel are approved. Before transfer,
-confirm maintainers, future commit-identity policy, transfer window, rollback
-owner, current clean release commit, and backups through ordinary Git remotes.
+The organization display name, namespace and URL, MIT licence, and GitHub
+Private Vulnerability Reporting channel are approved. Maintainer ownership,
+future commit-identity policy, Private Vulnerability Reporting enablement, and
+selection of an immutable release commit remain open.
 
-## 2. Create and configure GoDeeGo Productions
+## 2. GoDeeGo Productions destination
 
-An authorized owner creates or verifies the **GoDeeGo Productions** organization
-at the `GoDeeGo-Productions` namespace, enables appropriate account security,
-and confirms its public profile. Verify spelling and ownership before creating
-or accepting the destination repository.
+The **GoDeeGo Productions** organization and destination repository have been
+created at the `GoDeeGo-Productions` namespace. Account-security settings and
+the public profile remain owner-administered GitHub settings and are not claimed
+complete by this repository.
 
-## 3. Transfer the repository
+## 3. Completed transfer
 
-Use GitHub's repository transfer workflow only after both owners approve the
-exact source and destination. Transfer to `GoDeeGo-Productions` with repository
-name `home-assistant-grit-hub`, then verify the intended final URL. Do not mark
-the URL confirmed or make the repository public as an incidental step.
+The repository was transferred to `GoDeeGo-Productions` with repository name
+`home-assistant-grit-hub`, and the final URL was verified. This does not claim
+that `v0.1.0` has been tagged, released, published, or accepted by HACS at the
+final URL.
 
 ## 4. Permissions and security reporting
 
@@ -56,9 +56,9 @@ workflow permissions read-only unless a job demonstrably requires more.
 ## 7. HACS implications
 
 A custom-repository installation uses the repository URL selected by the user.
-After transfer, verify GitHub redirects and HACS behavior using the intended
-final URL. A future default-catalogue submission is a separate owner decision
-and must reference the final public location.
+HACS behavior using the final URL still requires release acceptance. A future
+default-catalogue submission is a separate owner decision and must reference the
+final public location.
 
 ## 8. Git redirects
 
@@ -68,8 +68,8 @@ remote behavior without relying on the old owner in public documentation.
 
 ## 9. Update local remotes
 
-Each maintainer verifies the current remote before changing it, then uses the
-approved destination after transfer:
+The local `origin` has been verified at the final destination. Maintainers can
+use these commands to verify or correct another clone:
 
 ```text
 git remote -v
@@ -77,25 +77,21 @@ git remote set-url origin https://github.com/GoDeeGo-Productions/home-assistant-
 git remote -v
 ```
 
-Do not run these commands until transfer succeeds and the destination URL is
-verified.
+No remote change is required in this clone.
 
 ## 10. Update README, manifest, and HACS references
 
-Prefer relative documentation links. Only after transfer, replace the current
-owner's absolute `documentation` and `issue_tracker` values in `manifest.json`
-with the operational final repository and issue URLs. Recheck README installation
-wording, `hacs.json`, badges, workflows, package metadata, examples, and release
-scripts. This release-candidate update intentionally leaves manifest URLs and
-codeowners pointed at the current repository.
+Prefer relative documentation links. The manifest `documentation` and
+`issue_tracker` values now use the verified final repository and issue URLs.
+Recheck HACS acceptance, badges, workflows, package metadata, examples, and
+release scripts before publication.
 
 ## 11. Update CODEOWNERS
 
-Add or change CODEOWNERS only after valid GoDeeGo Productions teams or
-maintainer accounts exist. This repository intentionally does not create a
-speculative CODEOWNERS file before transfer. Confirm paths and ownership against
-branch protection, then update `manifest.json` codeowners at the same review
-boundary.
+The manifest retains the individual maintainer handle `@dionweisler-ux`, which
+uses Hassfest-compatible codeowner syntax. It does not substitute the
+organization account as a speculative codeowner. A repository CODEOWNERS file
+and the final maintainer policy remain unverified release-checklist items.
 
 ## 12. Verify issue, security, and release links
 
@@ -124,18 +120,14 @@ owner explicitly approves a separately reviewed migration with a justified
 privacy or legal requirement. A transfer is not itself a reason to rewrite
 history.
 
-## Reference inventory before transfer
+## Reference inventory after transfer
 
-Approved future-owner references now appear in `LICENSE` and release
-preparation documentation. Current-repository references intentionally remain in:
-
-- `custom_components/grit_hub/manifest.json` documentation, issue tracker, and
-  codeowner;
-- `AGENTS.md` initial repository target.
-
-After transfer, update those current-owner references and re-audit README,
-manifest, `hacs.json`, CODEOWNERS, workflows, badges, docs, templates, tests,
-comments, and examples.
+Canonical repository references in `AGENTS.md`, the README, release
+documentation, and manifest now use GoDeeGo Productions and the verified final
+URL. The only retained former-owner handle is the manifest's individual
+maintainer codeowner, as described above. HACS final-URL acceptance, Private
+Vulnerability Reporting enablement, CODEOWNERS policy, badges, and publication
+remain pending.
 
 See [Repository metadata](REPOSITORY_METADATA.md),
 [Release checklist](RELEASE_CHECKLIST.md), and the [README](../README.md).
