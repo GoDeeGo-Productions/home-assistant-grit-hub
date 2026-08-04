@@ -82,6 +82,65 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("0.1.0 — Pending release", changelog)
         self.assertIn("has not yet been tagged or published", changelog)
 
+    def test_approved_owner_decisions_and_pending_operations_are_consistent(
+        self,
+    ) -> None:
+        final_url = (
+            "https://github.com/GoDeeGo-Productions/"
+            "home-assistant-grit-hub"
+        )
+        license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        security_flat = " ".join(security.split())
+        checklist = (ROOT / "docs/RELEASE_CHECKLIST.md").read_text(
+            encoding="utf-8"
+        )
+        transfer = (ROOT / "docs/REPOSITORY_TRANSFER.md").read_text(
+            encoding="utf-8"
+        )
+        metadata = (ROOT / "docs/REPOSITORY_METADATA.md").read_text(
+            encoding="utf-8"
+        )
+        acceptance = (
+            ROOT / "docs/ACCEPTANCE_REPORT_v0.1.0.md"
+        ).read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        installation = (ROOT / "docs/INSTALLATION.md").read_text(
+            encoding="utf-8"
+        )
+        manifest = json.loads(
+            (ROOT / "custom_components/grit_hub/manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertIn("Copyright (c) 2026 GoDeeGo Productions", license_text)
+        self.assertIn(
+            "GitHub Private Vulnerability Reporting", security_flat
+        )
+        self.assertIn("Security > Report a vulnerability", security_flat)
+        self.assertNotIn("no approved private security", security)
+        self.assertIn(
+            "- [x] Organisation display name and intended namespace approved",
+            checklist,
+        )
+        self.assertIn("- [x] MIT licence approved and present", checklist)
+        self.assertIn(
+            "- [x] Security reporting channel approved", checklist
+        )
+        self.assertIn("- [ ] Repository transferred", checklist)
+        self.assertIn(
+            "- [ ] Final repository URL confirmed after transfer", checklist
+        )
+        self.assertIn(
+            "- [ ] GitHub Private Vulnerability Reporting enabled and verified",
+            checklist,
+        )
+        for document in (transfer, metadata, acceptance, readme, installation):
+            self.assertIn("GoDeeGo Productions", document)
+            self.assertIn("GoDeeGo-Productions", document)
+            self.assertIn(final_url, document)
+        self.assertNotIn("GoDeeGo-Productions", json.dumps(manifest))
     def test_documented_platforms_match_const_and_modules(self) -> None:
         const_tree = ast.parse(
             (ROOT / "custom_components/grit_hub/const.py").read_text(

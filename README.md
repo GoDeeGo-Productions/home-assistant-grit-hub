@@ -83,15 +83,18 @@ This repository is not in the default HACS catalogue. To install it as a HACS
 Custom Repository:
 
 1. In HACS, open **Custom repositories**.
-2. Paste this repository's final GitHub URL.
+2. After transfer, paste the intended final repository URL:
+   `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`.
 3. Select **Integration** as the category.
 4. Add the repository and install **GRIT Hub**.
 5. Restart Home Assistant.
 6. Go to **Settings > Devices & services > Add integration** and choose
    **GRIT Hub**.
 
-The final repository URL is an owner decision still pending for this release
-candidate. See the full [Installation guide](docs/INSTALLATION.md).
+The GoDeeGo Productions destination is approved but has not yet been transferred
+or operationally verified. Until transfer, use the current repository location;
+publication must use the verified final URL. See the full
+[Installation guide](docs/INSTALLATION.md).
 
 ## Manual installation
 
@@ -162,9 +165,9 @@ objects are not exposed as entity attributes. The integration has no Home
 Assistant diagnostics-download implementation.
 
 Read [Security](SECURITY.md) before reporting a security issue. The approved
-private security contact is still a release decision; until one is published,
-open only a minimal public issue requesting a private channel and include no
-sensitive details.
+channel is GitHub Private Vulnerability Reporting through **Security > Report a
+vulnerability**. It must be enabled and verified before publication; never place
+vulnerability details or installation data in a public issue.
 
 ## Support and contributing
 
@@ -176,5 +179,5 @@ See [Contributing](CONTRIBUTING.md).
 
 ## Licence
 
-Licensed under the [MIT License](LICENSE). The included icon is a temporary,
+Licensed under the approved [MIT License](LICENSE). The included icon is a temporary,
 neutral project asset with no vendor logo or text.

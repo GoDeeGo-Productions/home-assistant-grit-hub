@@ -1,18 +1,20 @@
 # v0.1.0 release checklist
 
-All human and external-system tasks remain unchecked unless objective repository
-evidence proves completion. This file is a decision gate, not a claim that the
-release exists.
+Human and external-system tasks remain unchecked unless objective repository
+evidence proves completion. Checked owner decisions record approval only; they
+do not claim that the transfer, settings, or publication steps occurred.
 
 ## Repository decisions
 
-- [ ] Neutral GitHub organisation name approved
+- [x] Organisation display name and intended namespace approved: GoDeeGo Productions / `GoDeeGo-Productions`
+- [ ] GitHub organisation and destination repository created or prepared
 - [ ] Repository transferred
-- [ ] Final repository URL confirmed
+- [ ] Final repository URL confirmed after transfer
 - [ ] Maintainer ownership confirmed
 - [ ] Future commit identity policy confirmed
-- [ ] Licence approved and present
-- [ ] Security reporting contact approved
+- [x] MIT licence approved and present
+- [x] Security reporting channel approved: GitHub Private Vulnerability Reporting
+- [ ] GitHub Private Vulnerability Reporting enabled and verified
 
 ## Metadata
 

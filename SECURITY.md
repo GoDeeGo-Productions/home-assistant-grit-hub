@@ -13,14 +13,16 @@ response-time guarantee, or warranty.
 
 ## Reporting a vulnerability
 
-Private reporting is required. **Release blocker:** no approved private security
-contact or GitHub private-vulnerability-reporting route has yet been confirmed.
-The owner must approve and publish one before release.
+Submit vulnerabilities privately through **GitHub Private Vulnerability
+Reporting** using this repository's **Security > Report a vulnerability**
+function. This is the approved reporting channel for GoDeeGo Productions.
 
-Until that happens, open a minimal public issue that says only that you need a
-private security contact. Do not describe the vulnerability, affected site,
-endpoint, device, or reproduction steps in public. A maintainer can then arrange
-an approved private channel.
+Private Vulnerability Reporting must be enabled and verified on the transferred
+repository before `v0.1.0` is published. If **Report a vulnerability** is not
+available, do not disclose the vulnerability publicly. A minimal public issue
+may state only that the private reporting function is unavailable; it must not
+include vulnerability details, installation data, endpoints, or reproduction
+steps.
 
 Never disclose any of the following in an issue, pull request, discussion,
 screenshot, attachment, diagnostic, or log excerpt:
@@ -53,4 +55,5 @@ security report by operating physical equipment without a separately stated and
 explicitly authorized manual procedure.
 
 See [Contributing](CONTRIBUTING.md) for secure development rules and the
-[release checklist](docs/RELEASE_CHECKLIST.md) for the pending contact decision.
+[release checklist](docs/RELEASE_CHECKLIST.md) for the outstanding enablement
+check.

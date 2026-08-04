@@ -19,6 +19,12 @@ device type, command, endpoint, platform, discovery field, or publishing path.
 - Preparation branch: `codex/wp-0003-v0.1.0-release-candidate`.
 - Publication state: no final release, tag, HACS submission, transfer, commit, or
   push is asserted by this report.
+- Approved owner decisions: GoDeeGo Productions; intended namespace
+  `GoDeeGo-Productions`; intended final repository URL
+  `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`; MIT licence;
+  and GitHub Private Vulnerability Reporting.
+- Operational state: the destination, transfer, final-URL verification, and
+  Private Vulnerability Reporting enablement remain pending.
 
 Final release must select an immutable reviewed commit after all unchecked items
 in [Release checklist](RELEASE_CHECKLIST.md) are resolved.
@@ -138,7 +144,7 @@ provided. Secret and history scans must be rerun on the final release commit.
 The repository includes standard-library tests for API, authentication, config
 flow, discovery, MQTT, coordinator reconciliation, entities, runtime setup,
 manifest, documentation, and redaction. It also has HACS, Hassfest, and unit-test
-GitHub Actions. Final local network-free validation ran 351 tests successfully;
+GitHub Actions. Final local network-free validation ran 352 tests successfully;
 one optional real-Paho smoke test was skipped because Paho was intentionally not
 installed. All 31 Python files compiled in memory and parsed as AST, three JSON
 files and seven YAML files parsed, the 512×512 brand image passed PNG structure
@@ -158,21 +164,32 @@ CI after an authorized push and were not executed locally.
 
 ## 19. Remaining release decisions
 
-Owner decisions remain for organization name and transfer, final URL,
-maintainer ownership and CODEOWNERS, future commit identity, security contact,
-licence approval confirmation, repository description/topics, final release
-commit, tag/release notes, and HACS submission. Existing MIT licence text is
-present, but the owner checklist remains deliberately unchecked.
+Resolved owner decisions are the **GoDeeGo Productions** display name, intended
+`GoDeeGo-Productions` namespace and final repository URL, MIT licence and
+copyright notice, and GitHub Private Vulnerability Reporting channel.
+
+Operational implementation remains pending: create or verify the organization
+and destination, transfer the repository, verify the final URL, enable Private
+Vulnerability Reporting, confirm maintainers/CODEOWNERS and future commit
+identity, set repository description/topics, update manifest links after
+transfer, complete CI and final live acceptance, select the release commit, and
+approve the tag, release notes, publication, and any HACS submission.
 
 ## 20. Final acceptance checklist
 
-- [ ] All repository-decision items are approved.
+- [x] GoDeeGo Productions display name and intended namespace approved.
+- [x] MIT licence and GoDeeGo Productions copyright notice approved.
+- [x] GitHub Private Vulnerability Reporting approved as the security channel.
+- [ ] Organization/destination created or verified and repository transferred.
+- [ ] Final repository URL verified after transfer.
+- [ ] GitHub Private Vulnerability Reporting enabled and verified.
+- [ ] Remaining maintainer and commit-identity decisions approved.
 - [ ] Full local validation is green on the final diff.
 - [ ] HACS and Hassfest CI are green on the selected commit.
 - [ ] Secret and complete-history reviews are accepted.
 - [ ] Normal uninstall and deterministic clean reinstall are retested.
 - [ ] Remaining implemented controls are live-tested only under explicit safe authorization.
-- [ ] Final repository URLs and metadata are correct after any transfer.
+- [ ] Final repository URLs and metadata are correct after transfer.
 - [ ] Release commit, tag, notes, and distribution steps are approved.
 
 **Acceptance status:** Conditionally accepted as v0.1.0 release candidate,

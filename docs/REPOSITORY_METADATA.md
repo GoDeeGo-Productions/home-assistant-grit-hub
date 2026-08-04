@@ -1,7 +1,20 @@
 # Recommended repository metadata
 
-This file records owner actions for discoverability. It does not change GitHub
-settings and does not claim a public release.
+This file records approved owner decisions and remaining operational actions. It
+does not change GitHub settings, transfer a repository, or claim a public
+release.
+
+## Approved ownership and destination
+
+- Organisation display name: **GoDeeGo Productions**
+- Intended GitHub namespace: `GoDeeGo-Productions`
+- Intended final repository URL:
+  `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`
+- Approved licence: **MIT**
+- Approved security channel: **GitHub Private Vulnerability Reporting**
+
+The URL is intended, not operationally confirmed. Confirm it only after the
+organization/destination exists and the transfer succeeds.
 
 ## Description
 
@@ -22,7 +35,12 @@ settings and does not claim a public release.
 
 ## Release and search checklist
 
-- Set the final repository URL only after the neutral organization is approved.
+- Create or verify GoDeeGo Productions under the approved
+  `GoDeeGo-Productions` namespace.
+- Transfer the repository and verify the intended final URL before changing
+  canonical manifest links.
+- Enable and verify GitHub Private Vulnerability Reporting before publication.
+- Set the recommended description and topics through GitHub repository settings.
 - Keep README wording that naturally includes “GRIT Hub Home Assistant
   integration”, “Home Assistant custom component for GRIT Hub”, “HACS custom
   integration”, gates, RFID readers, GRITLock, collectors, and MQTT.
@@ -37,8 +55,8 @@ settings and does not claim a public release.
 - Recheck GitHub social preview, description, topics, release link, issues,
   manifest URLs, and HACS installation after transfer.
 
-No workflow badge is included before the final repository URL is known, because
-owner-qualified badge links would require another transfer edit.
+No workflow badge is included until the intended final URL is operationally
+confirmed, because publishing a badge early would imply completed transfer.
 
 See [Repository transfer](REPOSITORY_TRANSFER.md) and the
 [Release checklist](RELEASE_CHECKLIST.md).
