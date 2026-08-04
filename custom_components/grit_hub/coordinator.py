@@ -66,6 +66,8 @@ _MAX_RFID_STATE_TARGETS = 64
 _RFID_STATE_CONCURRENCY = 4
 _RFID_STATE_REFRESH_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
 _MAX_RFID_READ_TASKS = 64
+_MAX_RFID_EVENT_REFRESHES = 64
+_RFID_EVENT_DEBOUNCE = 0.25
 _MAX_CONFIRM_TIMEOUT = REST_DISCOVERY_TIMEOUT * 6
 _GRITLOCK_SETTLE_TIME = 0.25
 _MAX_GRITLOCK_OBSERVATIONS = 64
@@ -508,6 +510,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._rfid_state_request_sequence = 0
         self._rfid_read_semaphore = asyncio.Semaphore(_RFID_STATE_CONCURRENCY)
         self._rfid_read_tasks: set[asyncio.Task[dict[str, Any]]] = set()
+        self._rfid_event_tasks: dict[str, asyncio.Task[None]] = {}
+        self._rfid_event_in_flight: set[str] = set()
+        self._rfid_event_trailing: set[str] = set()
         self._mqtt_state_waiters: set[asyncio.Future[None]] = set()
         self._expected_mqtt_hub_id = (
             None
@@ -731,6 +736,165 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         collection[index] = merged
         return True
 
+    def _has_unique_rfid_target(self, device_id: str) -> bool:
+        """Return whether one exact top-level RFID identity is present."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return False
+        return sum(
+            _telemetry_identifier(device) == device_id
+            for device in collection
+        ) == 1
+
+    def _apply_current_rfid_detail(
+        self,
+        device_id: str,
+        detail: Any,
+        generation: int,
+    ) -> bool:
+        """Apply one detail response to current coordinator data and notify."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("rfid")
+        if not isinstance(collection, list):
+            return False
+
+        next_data = dict(data)
+        next_devices = dict(devices)
+        next_devices["rfid"] = [
+            dict(device) for device in collection if isinstance(device, dict)
+        ]
+        next_data["devices"] = next_devices
+        if not self._apply_rfid_detail(
+            next_devices,
+            device_id,
+            detail,
+            generation,
+        ):
+            return False
+        self.async_set_updated_data(next_data)
+        return True
+
+    def _satisfy_rfid_event_refresh(self, device_id: str) -> None:
+        """Let a fresh periodic or command read satisfy pending event work."""
+        task = self._rfid_event_tasks.get(device_id)
+        if task is None or task.done():
+            return
+        self._rfid_event_trailing.discard(device_id)
+        if device_id not in self._rfid_event_in_flight:
+            task.cancel()
+
+    def _finish_rfid_event_refresh(
+        self,
+        device_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        """Release one completed event-task entry without exposing identity."""
+        if self._rfid_event_tasks.get(device_id) is task:
+            self._rfid_event_tasks.pop(device_id, None)
+            self._rfid_event_in_flight.discard(device_id)
+            self._rfid_event_trailing.discard(device_id)
+
+    def _schedule_rfid_event_refresh(self, device_id: str) -> bool:
+        """Schedule or coalesce one exact RFID invalidation refresh."""
+        if (
+            not self._reconciliation_enabled
+            or not self._mqtt_connected
+            or not self._has_unique_rfid_target(device_id)
+        ):
+            return False
+
+        task = self._rfid_event_tasks.get(device_id)
+        if (
+            task is not None
+            and not task.done()
+            and not task.cancelling()
+        ):
+            if device_id in self._rfid_event_in_flight:
+                self._rfid_event_trailing.add(device_id)
+            return True
+        if task is not None:
+            self._rfid_event_tasks.pop(device_id, None)
+            self._rfid_event_in_flight.discard(device_id)
+            self._rfid_event_trailing.discard(device_id)
+        if len(self._rfid_event_tasks) >= _MAX_RFID_EVENT_REFRESHES:
+            return False
+
+        task = asyncio.create_task(self._async_rfid_event_refresh(device_id))
+        self._rfid_event_tasks[device_id] = task
+        task.add_done_callback(
+            lambda completed, identifier=device_id: (
+                self._finish_rfid_event_refresh(identifier, completed)
+            )
+        )
+        return True
+
+    def _cancel_rfid_event_refreshes(self) -> None:
+        """Cancel pending event refreshes and clear coalescing flags."""
+        self._rfid_event_in_flight.clear()
+        self._rfid_event_trailing.clear()
+        for task in tuple(self._rfid_event_tasks.values()):
+            if not task.done():
+                task.cancel()
+
+    async def _async_rfid_event_refresh(self, device_id: str) -> None:
+        """Run one debounced read and at most one trailing read."""
+        current_task = asyncio.current_task()
+        try:
+            for attempt in range(2):
+                await asyncio.sleep(_RFID_EVENT_DEBOUNCE)
+                if (
+                    not self._reconciliation_enabled
+                    or not self._mqtt_connected
+                    or self._rfid_event_tasks.get(device_id) is not current_task
+                ):
+                    return
+
+                self._rfid_event_in_flight.add(device_id)
+                try:
+                    generation, detail = await self._async_read_rfid_detail(
+                        device_id
+                    )
+                    if (
+                        self._rfid_event_tasks.get(device_id) is current_task
+                        and self._reconciliation_enabled
+                        and self._mqtt_connected
+                    ):
+                        self._apply_current_rfid_detail(
+                            device_id, detail, generation
+                        )
+                except GritHubApiError:
+                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _LOGGER.warning("GRIT RFID event refresh failed")
+                finally:
+                    if self._rfid_event_tasks.get(device_id) is current_task:
+                        self._rfid_event_in_flight.discard(device_id)
+
+                if (
+                    attempt == 0
+                    and self._rfid_event_tasks.get(device_id) is current_task
+                    and device_id in self._rfid_event_trailing
+                    and self._reconciliation_enabled
+                    and self._mqtt_connected
+                ):
+                    self._rfid_event_trailing.discard(device_id)
+                    continue
+                break
+        finally:
+            if self._rfid_event_tasks.get(device_id) is current_task:
+                self._rfid_event_in_flight.discard(device_id)
+                self._rfid_event_trailing.discard(device_id)
+                self._rfid_event_tasks.pop(device_id, None)
+
     async def _async_read_rfid_detail(
         self,
         device_id: str,
@@ -788,12 +952,15 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             except Exception:
                 return False
-            return self._apply_rfid_detail(
+            applied = self._apply_rfid_detail(
                 devices,
                 device_id,
                 detail,
                 generation,
             )
+            if applied:
+                self._satisfy_rfid_event_refresh(device_id)
+            return applied
 
         try:
             results = await asyncio.wait_for(
@@ -836,25 +1003,12 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 detail.get("state") if isinstance(detail, dict) else None
             )
 
-            data = self.data if isinstance(self.data, dict) else {}
-            devices = data.get("devices")
-            if isinstance(devices, dict):
-                next_data = dict(data)
-                next_devices = dict(devices)
-                collection = devices.get("rfid")
-                next_devices["rfid"] = (
-                    [dict(device) for device in collection]
-                    if isinstance(collection, list)
-                    else []
-                )
-                next_data["devices"] = next_devices
-                if self._apply_rfid_detail(
-                    next_devices,
-                    normalized_id,
-                    detail,
-                    generation,
-                ):
-                    self.async_set_updated_data(next_data)
+            if self._apply_current_rfid_detail(
+                normalized_id,
+                detail,
+                generation,
+            ):
+                self._satisfy_rfid_event_refresh(normalized_id)
 
             enabled, current_generation = self._rfid_state_observation(
                 normalized_id
@@ -1116,6 +1270,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt_connected = connected
         if not connected:
             self.cancel_state_reconciliation()
+            self._cancel_rfid_event_refreshes()
             self._reset_gritlock_mqtt_state()
             self._wake_mqtt_state_waiters()
         self.async_update_listeners()
@@ -1152,6 +1307,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Cancel and await telemetry work during unload or failed setup."""
         self._reconciliation_enabled = False
         self.cancel_state_reconciliation()
+        event_tasks = tuple(set(self._rfid_event_tasks.values()))
+        self._cancel_rfid_event_refreshes()
+        if event_tasks:
+            await asyncio.gather(*event_tasks, return_exceptions=True)
+        self._rfid_event_tasks.clear()
+        self._rfid_event_in_flight.clear()
+        self._rfid_event_trailing.clear()
         task = self._reconciliation_task
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
@@ -1674,6 +1836,12 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return False
 
+        rfid_event_scheduled = (
+            device_type == "rfid"
+            and normalized_message_type in {"s", "st"}
+            and self._schedule_rfid_event_refresh(normalized_device_id)
+        )
+
         sequence_present, source_sequence = _ordering_value(
             payload,
             ("source_sequence", "sequence", "seq"),
@@ -1688,6 +1856,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             (sequence_present and source_sequence is _INVALID)
             or (timestamp_present and source_timestamp is _INVALID)
         ):
+            if rfid_event_scheduled:
+                return True
             _LOGGER.debug(
                 "GRIT MQTT message rejected: invalid ordering metadata"
             )
@@ -1702,6 +1872,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_type, normalized_message_type, payload
         )
         if updates is None:
+            if rfid_event_scheduled:
+                return True
             _LOGGER.debug(
                 "GRIT MQTT message rejected: no supported state"
             )
@@ -1729,6 +1901,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     or source_sequence <= previous_sequence
                 )
             ):
+                if rfid_event_scheduled:
+                    return True
                 _LOGGER.debug(
                     "GRIT MQTT message rejected: update is not newer"
                 )
@@ -1740,6 +1914,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     or source_timestamp <= previous_timestamp
                 )
             ):
+                if rfid_event_scheduled:
+                    return True
                 _LOGGER.debug(
                     "GRIT MQTT message rejected: update is not newer"
                 )
