@@ -57,12 +57,12 @@ class GritHubSystemLedBrightnessNumber(GritHubEntity, NumberEntity):
         if hub_id is None:
             raise HomeAssistantError("Hub identity is unavailable")
         brightness = int(value)
+        confirmation_after = self.coordinator.refresh_sequence
         try:
             await self.coordinator.api.set_system_led_brightness(
                 hub_id,
                 brightness,
             )
-            confirmation_after = self.coordinator.refresh_sequence
             await asyncio.wait_for(
                 self.coordinator.async_request_refresh(),
                 timeout=HUB_CONFIRM_TIMEOUT,
