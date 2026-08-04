@@ -5,7 +5,9 @@ versioning for public releases.
 
 ## Unreleased
 
-- Prepared release-candidate documentation, security guidance, repository
+- Recorded final transferred-repository live acceptance and verified repository
+  security settings.
+- Prepared publication documentation, security guidance, repository
   metadata, and offline documentation validation.
 - Reduced benign unsupported MQTT-object logging from warning to debug while
   retaining warnings for malformed input.

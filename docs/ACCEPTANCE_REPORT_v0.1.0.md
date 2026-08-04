@@ -14,21 +14,24 @@ device type, command, endpoint, platform, discovery field, or publishing path.
 
 ## 2. Build and repository state
 
-- Candidate version: `0.1.0` in `manifest.json`.
-- Baseline: local clean `main` commit `ebec336`.
-- Final-URL update branch: `release/v0.1.0-final-urls`.
-- Publication state: the repository transfer and final URL are verified; no
-  final release, tag, HACS submission, or publication is asserted by this report.
+- Accepted version: `0.1.0` in `manifest.json`.
+- Baseline: local clean `main` commit `6245ed1`.
+- Acceptance-signoff branch: `release/v0.1.0-acceptance-signoff`.
+- Publication state: final acceptance is complete, but no release commit, tag,
+  GitHub release, release-notes publication, or HACS catalogue submission is
+  asserted by this report.
 - Approved owner decisions: GoDeeGo Productions; namespace
   `GoDeeGo-Productions`; final repository URL
   `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`; MIT licence;
   and GitHub Private Vulnerability Reporting.
 - Operational state: the destination exists, the transfer and final URL are
-  verified, and local `origin` is updated. Private Vulnerability Reporting
-  enablement remains pending.
+  verified, and local `origin` is updated. The repository description, topics,
+  Private Vulnerability Reporting, dependency graph, and Dependabot alerts are
+  enabled and verified.
 
-Final release must select an immutable reviewed commit after all unchecked items
-in [Release checklist](RELEASE_CHECKLIST.md) are resolved.
+Publication still requires selection of an immutable reviewed release commit,
+tagging, and the explicitly approved publication steps in the
+[Release checklist](RELEASE_CHECKLIST.md).
 
 ## 3. Test environment
 
@@ -40,11 +43,11 @@ fake REST/MQTT clients, bounded waits, and local static validation only.
 
 ## 4. Installation acceptance
 
-**Live-validated:** a clean HACS Custom Repository installation completed. The
-normal flow requested the API URL, raw token, and certificate preference,
-discovered the hub ID, and requested only the broker address when the API did
-not provide a usable LAN address. This repository remains outside the default
-HACS catalogue.
+**Live-validated from the transferred repository URL:** a clean HACS Custom
+Repository installation completed. The normal flow requested the API URL, raw
+token, and certificate preference, discovered the hub ID, and requested only the
+broker address when the API did not provide a usable LAN address. This
+repository remains outside the default HACS catalogue.
 
 ## 5. API authentication acceptance
 
@@ -55,11 +58,12 @@ not accepted as proof of token access.
 
 ## 6. MQTT discovery and readiness acceptance
 
-**Repository contract and prior live evidence:** internal defaults include port
-1883, TLS off, verification on where applicable, keepalive 60, and provisional
-read-only credentials. Readiness requires connection, successful subscribe, and
-the exact matching successful SUBACK for `grit/<hub-id>/+/+/#`. Normal
-`connect_async()` `None` behavior is accepted. MQTT never publishes.
+**Live-validated from the transferred repository URL:** MQTT connected and the
+exact hub-scoped subscription completed with its matching successful SUBACK.
+Internal defaults include port 1883, TLS off, verification on where applicable,
+keepalive 60, and provisional read-only credentials. Normal `connect_async()`
+`None` behavior is accepted. MQTT never publishes. Final live operation produced
+no repetitive benign MQTT warning noise.
 
 **Automated evidence:** fake Paho tests cover lifecycle races, early and stale
 callbacks, exact message-ID handling, reason codes, validation bounds, and
@@ -97,11 +101,11 @@ required. No equivalent transition contract is claimed for other switch types.
 
 ## 11. Hub control acceptance
 
-**Repository-derived:** implemented controls are Refresh All, per-device refresh
-and locate, GRIT service restart, a disabled-by-default Hub reboot, and System
-LED Brightness with post-write REST refresh confirmation. The system GRITLock is
-covered separately. A final explicitly authorized live check of LED and any
-other intended controls remains an unchecked release item.
+**Live-validated:** System LED Brightness and the intended implemented controls
+passed final acceptance. Implemented controls remain Refresh All, per-device
+refresh and locate, GRIT service restart, disabled-by-default Hub reboot, and
+System LED Brightness with post-write REST refresh confirmation. The system
+GRITLock is covered separately.
 
 ## 12. Reconfigure and token rotation acceptance
 
@@ -118,11 +122,9 @@ failed setup and unload clean up clients, loops, tasks, waiters, and listeners.
 
 ## 14. Clean uninstall and reinstall acceptance
 
-**Live-validated:** clean HACS installation completed. Normal uninstall and the
-deterministic clean-removal procedure are documented. Final sign-off for both
-normal uninstall and deterministic clean reinstall against the selected release
-commit remains unchecked because the supplied outcome does not separately assert
-both removal procedures.
+**Live-validated from the transferred repository URL:** clean installation,
+normal uninstall, and deterministic clean reinstall all completed successfully.
+The documented clean-removal boundaries were preserved.
 
 ## 15. Offline and failure-mode acceptance
 
@@ -149,8 +151,9 @@ GitHub Actions. Final local network-free validation ran 352 tests successfully;
 one optional real-Paho smoke test was skipped because Paho was intentionally not
 installed. All 31 Python files compiled in memory and parsed as AST, three JSON
 files and seven YAML files parsed, the 512×512 brand image passed PNG structure
-checks, and `git diff --check` passed. Official HACS and Hassfest results require
-CI after an authorized push and were not executed locally.
+checks, and `git diff --check` passed. The merged HACS, Hassfest, and unit-test CI
+checks are green. The acceptance-signoff documentation diff is validated locally
+without network or equipment interaction.
 
 ## 18. Known limitations
 
@@ -165,16 +168,15 @@ CI after an authorized push and were not executed locally.
 
 ## 19. Remaining release decisions
 
-Resolved owner and transfer items are the **GoDeeGo Productions** display name
-and `GoDeeGo-Productions` namespace, creation of the destination, completed
-transfer, verified final repository URL, updated local `origin`, MIT licence and
-copyright notice, and GitHub Private Vulnerability Reporting channel decision.
+Repository transfer, final-URL verification, description, topics, Private
+Vulnerability Reporting, dependency graph, Dependabot alerts, merged CI, and
+final live acceptance from the transferred repository URL are complete.
 
-Operational work remains: enable Private Vulnerability Reporting, confirm
-maintainers/CODEOWNERS and future commit identity, set repository
-description/topics, complete CI and final live acceptance including HACS at the
-final URL, select the release commit, and approve the tag, release notes,
-publication, and any HACS submission.
+Maintainer/CODEOWNERS and future commit-identity policy remain unresolved
+non-publication governance items. Publication still requires selection of the
+final release commit, creation of tag `v0.1.0`, creation of the GitHub release,
+and publication of the release notes. An official GRIT webpage link and any HACS
+default-catalogue submission remain separate future decisions.
 
 ## 20. Final acceptance checklist
 
@@ -183,19 +185,21 @@ publication, and any HACS submission.
 - [x] GitHub Private Vulnerability Reporting approved as the security channel.
 - [x] Organization/destination created and repository transferred.
 - [x] Final repository URL and local Git remote verified after transfer.
-- [ ] GitHub Private Vulnerability Reporting enabled and verified.
+- [x] GitHub Private Vulnerability Reporting enabled and verified.
+- [x] Repository description, topics, dependency graph, and Dependabot alerts verified.
 - [ ] Remaining maintainer and commit-identity decisions approved.
-- [ ] Full local validation is green on the final diff.
-- [ ] HACS and Hassfest CI are green on the selected commit.
-- [ ] Secret and complete-history reviews are accepted.
-- [ ] Normal uninstall and deterministic clean reinstall are retested.
-- [ ] Remaining implemented controls are live-tested only under explicit safe authorization.
+- [x] Full local validation is green on the acceptance-signoff diff.
+- [x] HACS, Hassfest, and unit-test CI are green on the merged baseline.
+- [x] Sensitive-value scan is clean on the acceptance-signoff diff.
+- [x] Complete-history exposure review accepted.
+- [x] Normal uninstall and deterministic clean reinstall passed.
+- [x] Remaining intended controls passed explicitly authorized live acceptance.
 - [x] Canonical local repository URLs updated after transfer.
-- [ ] HACS custom installation accepted against the final repository URL.
+- [x] HACS custom installation accepted against the final repository URL.
 - [ ] Release commit, tag, notes, and distribution steps are approved.
 
-**Acceptance status:** Conditionally accepted as v0.1.0 release candidate,
-subject to completion of the remaining release checklist and operational tasks.
+**Acceptance status:** Accepted for v0.1.0 publication, subject only to final
+release commit, tag and publication steps.
 
 See [Release checklist](RELEASE_CHECKLIST.md) and return to the
 [README](../README.md).

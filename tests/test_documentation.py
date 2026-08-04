@@ -75,14 +75,16 @@ class DocumentationTests(unittest.TestCase):
             )
         )
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_flat = " ".join(readme.replace(">", "").split())
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertEqual(manifest["version"], "0.1.0")
-        self.assertIn("`v0.1.0` release candidate", readme)
-        self.assertIn("not yet a final", readme)
+        self.assertIn("`v0.1.0` is accepted for publication", readme_flat)
+        self.assertIn("has not yet been tagged or published", readme_flat)
+        self.assertNotIn("`v0.1.0` release candidate", readme)
         self.assertIn("0.1.0 — Pending release", changelog)
         self.assertIn("has not yet been tagged or published", changelog)
 
-    def test_transferred_repository_metadata_is_consistent(
+    def test_acceptance_settings_and_pending_publication_are_consistent(
         self,
     ) -> None:
         final_url = (
@@ -137,17 +139,71 @@ class DocumentationTests(unittest.TestCase):
             "- [x] Local Git remote updated to the final repository URL",
             checklist,
         )
+        for completed_item in (
+            "- [x] GitHub Private Vulnerability Reporting enabled and verified",
+            "- [x] Dependency graph enabled",
+            "- [x] Dependabot alerts enabled",
+            "- [x] GitHub description set",
+            "- [x] GitHub topics set",
+            "- [x] Full CI green",
+            "- [x] Full unit suite green",
+            "- [x] Markdown links valid",
+            "- [x] JSON/YAML valid",
+            "- [x] `git diff --check` clean",
+            "- [x] Manifest version confirmed as 0.1.0",
+            "- [x] Changelog finalised",
+            "- [x] Acceptance report signed off",
+            "- [x] issue templates checked",
+            "- [x] workflow badge decision checked",
+            "- [x] Git history exposure reviewed",
+            "- [x] HACS custom install retested against final organisation URL",
+        ):
+            self.assertIn(completed_item, checklist)
+        for live_item in (
+            "Clean HACS install",
+            "Initial API authentication",
+            "MQTT connection and exact subscription",
+            "Gate startup state",
+            "Gate HA command",
+            "Gate GRIT app update",
+            "Mixed RFID startup states",
+            "RFID HA lock/unlock",
+            "RFID GRIT app update responsiveness",
+            "Offline RFID unavailable",
+            "GRITLock lock/unlock",
+            "Collector on/off",
+            "Collector delayed shutdown",
+            "LED/other implemented controls",
+            "Token rotation/Reconfigure",
+            "No duplicate devices/entities",
+            "Home Assistant restart",
+            "Normal uninstall",
+            "Deterministic clean reinstall",
+        ):
+            self.assertIn(f"- [x] {live_item}", checklist)
         for pending_item in (
-            "- [ ] GitHub Private Vulnerability Reporting enabled and verified",
-            "- [ ] GitHub description set",
-            "- [ ] GitHub topics set",
             "- [ ] Maintainer ownership confirmed",
+            "- [ ] Future commit identity policy confirmed",
             "- [ ] CODEOWNERS checked",
-            "- [ ] HACS custom install retested against final organisation URL",
+            "- [ ] Commit selected for release",
+            "- [ ] Tag `v0.1.0`",
+            "- [ ] GitHub release created",
+            "- [ ] Release notes published",
+            "- [ ] Official GRIT webpage link published",
+            "- [ ] HACS default catalogue submission decision made",
         ):
             self.assertIn(pending_item, checklist)
+        acceptance_flat = " ".join(acceptance.split())
         self.assertIn(
-            "- [ ] HACS custom installation accepted against the final "
+            "Accepted for v0.1.0 publication, subject only to final release "
+            "commit, tag and publication steps.",
+            acceptance_flat,
+        )
+        self.assertIn(
+            "- [x] Complete-history exposure review accepted.", acceptance
+        )
+        self.assertIn(
+            "- [x] HACS custom installation accepted against the final "
             "repository URL.",
             acceptance,
         )
