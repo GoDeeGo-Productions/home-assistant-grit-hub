@@ -174,6 +174,25 @@ class GritHubApiClient:
         )
         return sanitize_rfid_device_data(data)
 
+    async def get_collector_device(self, device_id: str) -> dict[str, Any]:
+        """Read and strictly sanitize one collector detail response."""
+        if not isinstance(device_id, str):
+            raise GritHubApiError("Collector device identifier is invalid")
+        normalized_id = device_id.strip()
+        if (
+            not normalized_id
+            or normalized_id in {".", ".."}
+            or len(normalized_id) > 128
+            or not normalized_id.isprintable()
+        ):
+            raise GritHubApiError("Collector device identifier is invalid")
+        data = await self.request(
+            "GET",
+            f"/api/collector/{quote(normalized_id, safe='')}",
+            timeout=REST_DISCOVERY_TIMEOUT,
+        )
+        return sanitize_collector_device_data(data)
+
     async def request_device_telemetry(
         self,
         device_type: str,
@@ -306,7 +325,7 @@ def sanitize_device_data(
             sanitized[field] = text
 
     for field in _DEVICE_STATE_FIELDS:
-        if device_type == "rfid" and field == "state":
+        if device_type in {"rfid", "collector"} and field == "state":
             continue
         raw = value.get(field)
         if isinstance(raw, bool) or isinstance(raw, int):
@@ -347,6 +366,39 @@ def sanitize_rfid_device_data(value: Any) -> dict[str, Any]:
     online = value.get("onlineStatus")
     if isinstance(online, bool):
         sanitized["onlineStatus"] = online
+
+    for field in ("name", "displayName", "version"):
+        text = _bounded_device_text(value.get(field))
+        if text is not None:
+            sanitized[field] = text
+
+    return sanitized
+
+
+def sanitize_collector_device_data(value: Any) -> dict[str, Any]:
+    """Retain only strict fields required from one collector detail response."""
+    if not isinstance(value, dict):
+        return {}
+
+    sanitized: dict[str, Any] = {}
+    identifier = value.get("id")
+    if isinstance(identifier, int) and not isinstance(identifier, bool):
+        sanitized["id"] = identifier
+    else:
+        text_id = _bounded_device_text(identifier)
+        if text_id is not None:
+            sanitized["id"] = text_id
+
+    for field in (
+        "state",
+        "stateChanging",
+        "stateChangingTo",
+        "onlineStatus",
+        "isOnline",
+    ):
+        field_value = value.get(field)
+        if isinstance(field_value, bool):
+            sanitized[field] = field_value
 
     for field in ("name", "displayName", "version"):
         text = _bounded_device_text(value.get(field))

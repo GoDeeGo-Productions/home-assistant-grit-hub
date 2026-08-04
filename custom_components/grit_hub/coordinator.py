@@ -25,6 +25,12 @@ _LOGGER = logging.getLogger(__name__)
 MQTT_STATE_KEY = "_grit_mqtt"
 RFID_ENABLED_KEY = "_grit_rfid_enabled"
 RFID_STATE_GENERATION_KEY = "_grit_rfid_state_generation"
+COLLECTOR_STATE_KEY = "_grit_collector_state"
+COLLECTOR_STATE_CHANGING_KEY = "_grit_collector_state_changing"
+COLLECTOR_STATE_CHANGING_TO_KEY = "_grit_collector_state_changing_to"
+COLLECTOR_ONLINE_KEY = "_grit_collector_online"
+COLLECTOR_STATE_GENERATION_KEY = "_grit_collector_state_generation"
+COLLECTOR_MQTT_BOUNDARY_KEY = "_grit_collector_mqtt_boundary"
 
 _IDENTIFIER_KEYS = (
     "id",
@@ -55,7 +61,7 @@ _STATE_FIELDS = tuple(_FIELD_CATEGORIES)
 _LOCAL_RECEIVE_SEQUENCE_KEY = "_receive_sequence"
 _FIELD_OBSERVATIONS_KEY = "_field_observations"
 
-_RECONCILIATION_DEVICE_TYPES = ("gate", "rfid")
+_RECONCILIATION_DEVICE_TYPES = ("gate", "rfid", "collector")
 _COMMAND_STATE_FIELDS = {"gate": "open"}
 _LIVE_STATE_FIELDS = {"gate": ("position", "open")}
 _RECONCILIATION_CONCURRENCY = 4
@@ -68,6 +74,10 @@ _RFID_STATE_REFRESH_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
 _MAX_RFID_READ_TASKS = 64
 _MAX_RFID_EVENT_REFRESHES = 64
 _RFID_EVENT_DEBOUNCE = 0.25
+_MAX_COLLECTOR_STATE_TARGETS = 64
+_COLLECTOR_STATE_REFRESH_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
+_MAX_COLLECTOR_CONFIRM_ATTEMPTS = 64
+_COLLECTOR_CONFIRM_INTERVAL = 0.25
 _MAX_CONFIRM_TIMEOUT = REST_DISCOVERY_TIMEOUT * 6
 _GRITLOCK_SETTLE_TIME = 0.25
 _MAX_GRITLOCK_OBSERVATIONS = 64
@@ -508,6 +518,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ] = {}
         self._telemetry_request_waiters: dict[tuple[str, str], int] = {}
         self._rfid_state_request_sequence = 0
+        self._collector_state_request_sequence = 0
+        # The proven RFID pool is shared with collector detail reads so the
+        # integration retains one bounded individual-device concurrency budget.
         self._rfid_read_semaphore = asyncio.Semaphore(_RFID_STATE_CONCURRENCY)
         self._rfid_read_tasks: set[asyncio.Task[dict[str, Any]]] = set()
         self._rfid_event_tasks: dict[str, asyncio.Task[None]] = {}
@@ -1025,6 +1038,457 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             return await asyncio.wait_for(read_and_confirm(), timeout=timeout)
         except (asyncio.TimeoutError, GritHubApiError):
+            return False
+
+    @staticmethod
+    def _collector_detail_online(detail: dict[str, Any]) -> Any:
+        """Return one unambiguous strict collector availability value."""
+        values = [
+            detail[field]
+            for field in ("isOnline", "onlineStatus")
+            if isinstance(detail.get(field), bool)
+        ]
+        if not values or any(value is not values[0] for value in values[1:]):
+            return _INVALID
+        return values[0]
+
+    def _collector_state_observation(
+        self,
+        device_id: Any,
+        devices: Any | None = None,
+    ) -> tuple[bool | None, bool | None, bool | None, bool | None, int]:
+        """Return one exact collector detail observation and its generation."""
+        normalized_id = _normalize_identifier(device_id)
+        if normalized_id is None:
+            return None, None, None, None, 0
+        if devices is None:
+            data = self.data if isinstance(self.data, dict) else {}
+            devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return None, None, None, None, 0
+        collection = devices.get("collector")
+        if not isinstance(collection, list):
+            return None, None, None, None, 0
+        matches = [
+            device
+            for device in collection
+            if _telemetry_identifier(device) == normalized_id
+        ]
+        if len(matches) != 1 or not isinstance(matches[0], dict):
+            return None, None, None, None, 0
+        record = matches[0]
+        generation = _local_receive_sequence(
+            record.get(COLLECTOR_STATE_GENERATION_KEY)
+        )
+        if generation is _INVALID:
+            return None, None, None, None, 0
+        state = record.get(COLLECTOR_STATE_KEY)
+        changing = record.get(COLLECTOR_STATE_CHANGING_KEY)
+        changing_to = record.get(COLLECTOR_STATE_CHANGING_TO_KEY)
+        online = record.get(COLLECTOR_ONLINE_KEY)
+        return (
+            state if isinstance(state, bool) else None,
+            changing if isinstance(changing, bool) else None,
+            changing_to if isinstance(changing_to, bool) else None,
+            online if isinstance(online, bool) else None,
+            generation,
+        )
+
+    def collector_state(self, device_id: Any) -> bool | None:
+        """Return current authoritative collector state from individual REST."""
+        state, _changing, _changing_to, _online, _generation = (
+            self._collector_state_observation(device_id)
+        )
+        return state
+
+    def collector_display_state(self, device_id: Any) -> bool | None:
+        """Return individual REST state plus only newer MQTT supplementation."""
+        normalized_id = _normalize_identifier(device_id)
+        if normalized_id is None:
+            return None
+        state = self.collector_state(normalized_id)
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        collection = devices.get("collector") if isinstance(devices, dict) else None
+        matches = [
+            device
+            for device in collection or []
+            if _telemetry_identifier(device) == normalized_id
+        ]
+        if len(matches) != 1 or not isinstance(matches[0], dict):
+            return None
+        boundary = _local_receive_sequence(
+            matches[0].get(COLLECTOR_MQTT_BOUNDARY_KEY)
+        )
+        if boundary is _INVALID:
+            boundary = 0
+        mqtt_state = self._mqtt_field_observation(
+            "collector",
+            normalized_id,
+            "state",
+            boundary,
+        )
+        if isinstance(mqtt_state, bool):
+            return mqtt_state
+        if state is not None:
+            return state
+        persisted = _sanitize_mqtt_state(matches[0].get(MQTT_STATE_KEY))
+        fallback = persisted.get("state") if persisted else None
+        return fallback if isinstance(fallback, bool) else None
+    def collector_online(self, device_id: Any) -> bool | None:
+        """Return current strict collector availability from individual REST."""
+        _state, _changing, _changing_to, online, _generation = (
+            self._collector_state_observation(device_id)
+        )
+        return online
+
+    def collector_state_generation(self, device_id: Any) -> int:
+        """Return the last individual collector request generation."""
+        _state, _changing, _changing_to, _online, generation = (
+            self._collector_state_observation(device_id)
+        )
+        return generation
+
+    @staticmethod
+    def _preserve_collector_rest_state(
+        previous_devices: Any,
+        refreshed_devices: Any,
+    ) -> None:
+        """Preserve newer exact collector detail state across inventory reads."""
+        if not isinstance(previous_devices, dict) or not isinstance(
+            refreshed_devices, dict
+        ):
+            return
+        previous = previous_devices.get("collector")
+        refreshed = refreshed_devices.get("collector")
+        if not isinstance(previous, list) or not isinstance(refreshed, list):
+            return
+
+        previous_ids = [_telemetry_identifier(device) for device in previous]
+        refreshed_ids = [_telemetry_identifier(device) for device in refreshed]
+        previous_counts = Counter(
+            identifier for identifier in previous_ids if identifier is not None
+        )
+        refreshed_counts = Counter(
+            identifier for identifier in refreshed_ids if identifier is not None
+        )
+        previous_by_id = {
+            identifier: device
+            for identifier, device in zip(previous_ids, previous)
+            if identifier is not None
+            and previous_counts[identifier] == 1
+            and isinstance(device, dict)
+        }
+
+        for identifier, device in zip(refreshed_ids, refreshed):
+            if not isinstance(device, dict):
+                continue
+            # Collection state is inventory-only; individual detail is the
+            # proven authority for collector state and transition fields.
+            for field in (
+                "state",
+                "stateChanging",
+                "stateChangingTo",
+                "onlineStatus",
+                "isOnline",
+            ):
+                device.pop(field, None)
+            if identifier is None or refreshed_counts[identifier] != 1:
+                continue
+            prior = previous_by_id.get(identifier)
+            if prior is None:
+                continue
+            prior_generation = _local_receive_sequence(
+                prior.get(COLLECTOR_STATE_GENERATION_KEY)
+            )
+            current_generation = _local_receive_sequence(
+                device.get(COLLECTOR_STATE_GENERATION_KEY)
+            )
+            if (
+                prior_generation is _INVALID
+                or (
+                    current_generation is not _INVALID
+                    and current_generation >= prior_generation
+                )
+            ):
+                continue
+            for field in (
+                COLLECTOR_STATE_KEY,
+                COLLECTOR_STATE_CHANGING_KEY,
+                COLLECTOR_STATE_CHANGING_TO_KEY,
+                COLLECTOR_ONLINE_KEY,
+                COLLECTOR_STATE_GENERATION_KEY,
+                COLLECTOR_MQTT_BOUNDARY_KEY,
+            ):
+                if field in prior:
+                    device[field] = prior[field]
+
+    @classmethod
+    def _apply_collector_detail(
+        cls,
+        devices: Any,
+        requested_id: str,
+        detail: Any,
+        request_generation: int,
+        mqtt_boundary: int,
+    ) -> bool:
+        """Merge one strict detail response into one exact collector record."""
+        if (
+            not isinstance(devices, dict)
+            or not isinstance(detail, dict)
+            or _local_receive_sequence(mqtt_boundary) is _INVALID
+        ):
+            return False
+        detail_id = _normalize_identifier(detail.get("id"))
+        state = detail.get("state")
+        changing = detail.get("stateChanging")
+        changing_to = detail.get("stateChangingTo")
+        online = cls._collector_detail_online(detail)
+        if (
+            detail_id != requested_id
+            or not isinstance(state, bool)
+            or not isinstance(changing, bool)
+            or not isinstance(changing_to, bool)
+            or not isinstance(online, bool)
+        ):
+            return False
+        collection = devices.get("collector")
+        if not isinstance(collection, list):
+            return False
+        matches = [
+            (index, device)
+            for index, device in enumerate(collection)
+            if _telemetry_identifier(device) == requested_id
+        ]
+        if len(matches) != 1:
+            return False
+        index, current = matches[0]
+        if not isinstance(current, dict):
+            return False
+        current_generation = _local_receive_sequence(
+            current.get(COLLECTOR_STATE_GENERATION_KEY)
+        )
+        if (
+            current_generation is not _INVALID
+            and current_generation >= request_generation
+        ):
+            return False
+
+        merged = dict(current)
+        for field in (
+            "state",
+            "stateChanging",
+            "stateChangingTo",
+            "onlineStatus",
+            "isOnline",
+        ):
+            merged.pop(field, None)
+        for field in ("name", "displayName", "version"):
+            if field in detail:
+                merged[field] = detail[field]
+        if online:
+            merged[COLLECTOR_STATE_KEY] = state
+        merged[COLLECTOR_STATE_CHANGING_KEY] = changing
+        merged[COLLECTOR_STATE_CHANGING_TO_KEY] = changing_to
+        merged[COLLECTOR_ONLINE_KEY] = online
+        merged[COLLECTOR_STATE_GENERATION_KEY] = request_generation
+        merged[COLLECTOR_MQTT_BOUNDARY_KEY] = mqtt_boundary
+        collection[index] = merged
+        return True
+
+    def _apply_current_collector_detail(
+        self,
+        device_id: str,
+        detail: Any,
+        generation: int,
+    ) -> bool:
+        """Apply one collector detail response to current data and notify."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("collector")
+        if not isinstance(collection, list):
+            return False
+
+        next_data = dict(data)
+        next_devices = dict(devices)
+        next_devices["collector"] = [
+            dict(device) for device in collection if isinstance(device, dict)
+        ]
+        next_data["devices"] = next_devices
+        if not self._apply_collector_detail(
+            next_devices,
+            device_id,
+            detail,
+            generation,
+            self._mqtt_receive_sequence,
+        ):
+            return False
+        self.async_set_updated_data(next_data)
+        return True
+
+    async def _async_read_collector_detail(
+        self,
+        device_id: str,
+    ) -> tuple[int, dict[str, Any]]:
+        """Run one tracked collector read in the shared bounded REST pool."""
+        if not self._reconciliation_enabled:
+            raise GritHubApiError("Collector state reads are unavailable")
+        async with self._rfid_read_semaphore:
+            if not self._reconciliation_enabled:
+                raise GritHubApiError("Collector state reads are unavailable")
+            if len(self._rfid_read_tasks) >= _MAX_RFID_READ_TASKS:
+                raise GritHubApiError("Individual state request limit reached")
+            if self._collector_state_request_sequence >= _MAX_SOURCE_SEQUENCE:
+                raise GritHubApiError("Collector state generation limit reached")
+            self._collector_state_request_sequence += 1
+            request_generation = self._collector_state_request_sequence
+            task = asyncio.create_task(self.api.get_collector_device(device_id))
+            self._rfid_read_tasks.add(task)
+            try:
+                detail = await task
+            finally:
+                self._rfid_read_tasks.discard(task)
+            return request_generation, detail
+
+    async def _async_refresh_collector_states(self, devices: Any) -> bool:
+        """Refresh at most 64 collectors using the shared concurrency bound."""
+        if not isinstance(devices, dict):
+            return False
+        collection = devices.get("collector")
+        if not isinstance(collection, list):
+            return False
+
+        identifiers = [_telemetry_identifier(device) for device in collection]
+        counts = Counter(
+            identifier for identifier in identifiers if identifier is not None
+        )
+        incomplete = any(identifier is None for identifier in identifiers) or any(
+            count != 1 for count in counts.values()
+        )
+        targets = list(dict.fromkeys(
+            identifier
+            for identifier in identifiers
+            if identifier is not None and counts[identifier] == 1
+        ))
+        truncated = len(targets) > _MAX_COLLECTOR_STATE_TARGETS
+        targets = targets[:_MAX_COLLECTOR_STATE_TARGETS]
+        if not targets:
+            return not incomplete and not truncated
+
+        async def read_one(device_id: str) -> bool:
+            try:
+                generation, detail = await self._async_read_collector_detail(
+                    device_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return False
+            return self._apply_collector_detail(
+                devices,
+                device_id,
+                detail,
+                generation,
+                self._mqtt_receive_sequence,
+            )
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(read_one(device_id) for device_id in targets)),
+                timeout=_COLLECTOR_STATE_REFRESH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return False
+        return not incomplete and not truncated and all(results)
+
+    def _collector_confirmation_outcome(
+        self,
+        device_id: str,
+        expected: bool,
+        after_generation: int,
+    ) -> bool | None:
+        """Classify one newer collector observation, or request another read."""
+        state, changing, changing_to, online, generation = (
+            self._collector_state_observation(device_id)
+        )
+        if generation <= after_generation:
+            return None
+        if online is not True:
+            return False
+        if changing is True:
+            return None if changing_to is expected else False
+        if changing is not False:
+            return False
+        return state is expected
+
+    async def async_confirm_collector_state(
+        self,
+        device_id: Any,
+        expected: bool,
+        *,
+        after_generation: int,
+        timeout: float,
+    ) -> bool:
+        """Confirm a collector from newer settled individual REST detail."""
+        normalized_id = _normalize_identifier(device_id)
+        if (
+            normalized_id is None
+            or not isinstance(expected, bool)
+            or _local_receive_sequence(after_generation) is _INVALID
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= _MAX_CONFIRM_TIMEOUT
+            or not self._reconciliation_enabled
+        ):
+            return False
+
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + float(timeout)
+            for attempt in range(_MAX_COLLECTOR_CONFIRM_ATTEMPTS):
+                outcome = self._collector_confirmation_outcome(
+                    normalized_id,
+                    expected,
+                    after_generation,
+                )
+                if outcome is not None:
+                    return outcome
+
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return False
+                generation, detail = await asyncio.wait_for(
+                    self._async_read_collector_detail(normalized_id),
+                    timeout=remaining,
+                )
+                applied = self._apply_current_collector_detail(
+                    normalized_id,
+                    detail,
+                    generation,
+                )
+                outcome = self._collector_confirmation_outcome(
+                    normalized_id,
+                    expected,
+                    after_generation,
+                )
+                if outcome is not None:
+                    return outcome
+                if not applied or attempt + 1 >= _MAX_COLLECTOR_CONFIRM_ATTEMPTS:
+                    return False
+
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return False
+                await asyncio.sleep(min(_COLLECTOR_CONFIRM_INTERVAL, remaining))
+            return False
+        except asyncio.CancelledError:
+            raise
+        except (asyncio.TimeoutError, GritHubApiError):
+            return False
+        except Exception:
+            _LOGGER.warning("GRIT collector state confirmation failed")
             return False
 
     def _rest_gritlock_participants(
@@ -1748,6 +2212,14 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     data["devices"][dev_type] = []
                 data["errors"][dev_type] = str(err)
 
+        self._preserve_collector_rest_state(
+            previous_devices,
+            data["devices"],
+        )
+        if not await self._async_refresh_collector_states(data["devices"]):
+            data["errors"]["collector_state"] = (
+                "Collector state refresh was incomplete"
+            )
         self._preserve_rfid_rest_state(
             previous_devices,
             data["devices"],
@@ -1759,6 +2231,10 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         latest_data = self.data if isinstance(self.data, dict) else previous_data
         latest_devices = latest_data.get("devices", previous_devices)
+        self._preserve_collector_rest_state(
+            latest_devices,
+            data["devices"],
+        )
         self._preserve_rfid_rest_state(
             latest_devices,
             data["devices"],

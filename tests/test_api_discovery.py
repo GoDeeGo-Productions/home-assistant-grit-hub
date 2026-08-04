@@ -369,6 +369,94 @@ class ApiHubTests(unittest.TestCase):
                     asyncio.run(client.get_rfid_device(value))
         client.request.assert_not_awaited()
 
+    def test_collector_collection_drops_unproven_state(self):
+        for state in (True, False, 1, "false"):
+            with self.subTest(state=state):
+                collector = API.sanitize_device_data(
+                    {"id": "collector-test", "state": state},
+                    device_type="collector",
+                )
+                self.assertNotIn("state", collector)
+
+    def test_individual_collector_get_is_encoded_bounded_and_sanitized(self):
+        client = self.client()
+        calls = []
+        private_value = "fabricated-private-collector-data"
+
+        async def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return {
+                "id": "collector/id",
+                "state": True,
+                "stateChanging": False,
+                "stateChangingTo": True,
+                "isOnline": True,
+                "onlineStatus": True,
+                "displayName": "Fabricated Collector",
+                "version": "1.2.3-test",
+                "diagnostics": {"private": private_value},
+            }
+
+        client.request = request
+        result = asyncio.run(client.get_collector_device("collector/id"))
+
+        self.assertEqual(
+            result,
+            {
+                "id": "collector/id",
+                "state": True,
+                "stateChanging": False,
+                "stateChangingTo": True,
+                "isOnline": True,
+                "onlineStatus": True,
+                "displayName": "Fabricated Collector",
+                "version": "1.2.3-test",
+            },
+        )
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "GET",
+                    "/api/collector/collector%2Fid",
+                    {"timeout": API.REST_DISCOVERY_TIMEOUT},
+                )
+            ],
+        )
+        self.assertNotIn(private_value, repr(result))
+
+    def test_individual_collector_values_are_strict_and_id_is_validated(self):
+        for value in (1, 0, "true", None, [], {}):
+            with self.subTest(value=value):
+                result = API.sanitize_collector_device_data(
+                    {
+                        "id": "collector-test",
+                        "state": value,
+                        "stateChanging": value,
+                        "stateChangingTo": value,
+                        "isOnline": value,
+                        "onlineStatus": value,
+                    }
+                )
+                self.assertEqual(result, {"id": "collector-test"})
+
+        client = self.client()
+        client.request = mock.AsyncMock()
+        for value in (
+            None,
+            True,
+            42,
+            "",
+            " ",
+            ".",
+            "..",
+            "line\nbreak",
+            "x" * 129,
+        ):
+            with self.subTest(identifier=value):
+                with self.assertRaises(API.GritHubApiError):
+                    asyncio.run(client.get_collector_device(value))
+        client.request.assert_not_awaited()
     def test_targeted_telemetry_refresh_uses_documented_bounded_endpoint(self):
         client = self.client()
         calls = []
