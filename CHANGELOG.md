@@ -5,15 +5,19 @@ versioning for public releases.
 
 ## Unreleased
 
+No unreleased changes are recorded.
+
+## 0.1.0 — 2026-08-04
+
+### Changed
+
 - Recorded final transferred-repository live acceptance and verified repository
   security settings.
-- Prepared publication documentation, security guidance, repository
-  metadata, and offline documentation validation.
+- Prepared publication documentation, security guidance, repository metadata,
+  and offline documentation validation.
 - Reduced benign unsupported MQTT-object logging from warning to debug while
   retaining warnings for malformed input.
 - Made authenticated REST requests fail closed on HTTP redirects.
-
-## 0.1.0 — Pending release
 
 ### Added
 
@@ -44,5 +48,5 @@ versioning for public releases.
 - Redirect refusal for bearer-authenticated requests and diagnostics.
 - No arbitrary HTTP endpoint service and no MQTT publishing.
 
-`0.1.0` has not yet been tagged or published. See the
-[release checklist](docs/RELEASE_CHECKLIST.md).
+Released as [GRIT Hub for Home Assistant v0.1.0](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
+on 2026-08-04.

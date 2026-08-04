@@ -77,20 +77,32 @@ class DocumentationTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         readme_flat = " ".join(readme.replace(">", "").split())
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        acceptance = (
+            ROOT / "docs/ACCEPTANCE_REPORT_v0.1.0.md"
+        ).read_text(encoding="utf-8")
+        release_url = (
+            "https://github.com/GoDeeGo-Productions/"
+            "home-assistant-grit-hub/releases/tag/v0.1.0"
+        )
+        release_documents = (readme, changelog, acceptance)
         self.assertEqual(manifest["version"], "0.1.0")
-        self.assertIn("`v0.1.0` is accepted for publication", readme_flat)
-        self.assertIn("has not yet been tagged or published", readme_flat)
-        self.assertNotIn("`v0.1.0` release candidate", readme)
-        self.assertIn("0.1.0 — Pending release", changelog)
-        self.assertIn("has not yet been tagged or published", changelog)
+        self.assertIn("`v0.1.0`", readme_flat)
+        self.assertIn("was released on 2026-08-04", readme_flat)
+        self.assertIn("0.1.0 — 2026-08-04", changelog)
+        for document in release_documents:
+            self.assertIn(release_url, document)
+            self.assertNotIn("has not yet been tagged or published", document)
+            self.assertNotIn("0.1.0 — Pending release", document)
 
-    def test_acceptance_settings_and_pending_publication_are_consistent(
+    def test_published_release_and_remaining_decisions_are_consistent(
         self,
     ) -> None:
         final_url = (
             "https://github.com/GoDeeGo-Productions/"
             "home-assistant-grit-hub"
         )
+        release_url = f"{final_url}/releases/tag/v0.1.0"
+        release_commit = "9464dbab1798cae3b2d0f538d0db3ed64d510884"
         license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
         security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
         security_flat = " ".join(security.split())
@@ -157,6 +169,10 @@ class DocumentationTests(unittest.TestCase):
             "- [x] workflow badge decision checked",
             "- [x] Git history exposure reviewed",
             "- [x] HACS custom install retested against final organisation URL",
+            "- [x] Final release commit selected: " + f"`{release_commit}`",
+            "- [x] Tag `v0.1.0`",
+            "- [x] GitHub release created:",
+            "- [x] Release notes published",
         ):
             self.assertIn(completed_item, checklist)
         for live_item in (
@@ -185,20 +201,18 @@ class DocumentationTests(unittest.TestCase):
             "- [ ] Maintainer ownership confirmed",
             "- [ ] Future commit identity policy confirmed",
             "- [ ] CODEOWNERS checked",
-            "- [ ] Commit selected for release",
-            "- [ ] Tag `v0.1.0`",
-            "- [ ] GitHub release created",
-            "- [ ] Release notes published",
             "- [ ] Official GRIT webpage link published",
             "- [ ] HACS default catalogue submission decision made",
         ):
             self.assertIn(pending_item, checklist)
         acceptance_flat = " ".join(acceptance.split())
         self.assertIn(
-            "Accepted for v0.1.0 publication, subject only to final release "
-            "commit, tag and publication steps.",
+            "Final acceptance completed; `v0.1.0` was published on "
+            "2026-08-04.",
             acceptance_flat,
         )
+        self.assertIn(release_commit, acceptance)
+        self.assertIn(release_url, acceptance)
         self.assertIn(
             "- [x] Complete-history exposure review accepted.", acceptance
         )

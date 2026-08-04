@@ -6,7 +6,7 @@ offline evidence, and owner decisions.
 
 ## 1. Scope
 
-The candidate covers the existing GRIT Hub Home Assistant integration: HACS
+Published `v0.1.0` covers the existing GRIT Hub Home Assistant integration: HACS
 custom-repository packaging, authenticated REST discovery, subscribe-only MQTT
 readiness, documented entities, bounded reconciliation and confirmation,
 reconfiguration, privacy controls, and network-free validation. It adds no new
@@ -14,12 +14,13 @@ device type, command, endpoint, platform, discovery field, or publishing path.
 
 ## 2. Build and repository state
 
-- Accepted version: `0.1.0` in `manifest.json`.
-- Baseline: local clean `main` commit `6245ed1`.
-- Acceptance-signoff branch: `release/v0.1.0-acceptance-signoff`.
-- Publication state: final acceptance is complete, but no release commit, tag,
-  GitHub release, release-notes publication, or HACS catalogue submission is
-  asserted by this report.
+- Published version: `0.1.0` in `manifest.json`.
+- Release date: `2026-08-04`.
+- Release commit: [`9464dbab1798cae3b2d0f538d0db3ed64d510884`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/commit/9464dbab1798cae3b2d0f538d0db3ed64d510884).
+- Tag: `v0.1.0`, pointing to the release commit above.
+- GitHub release: [GRIT Hub for Home Assistant v0.1.0](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0).
+- Publication state: the tag, GitHub release, and release notes are published.
+  This report does not assert a HACS default-catalogue submission.
 - Approved owner decisions: GoDeeGo Productions; namespace
   `GoDeeGo-Productions`; final repository URL
   `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`; MIT licence;
@@ -29,8 +30,9 @@ device type, command, endpoint, platform, discovery field, or publishing path.
   Private Vulnerability Reporting, dependency graph, and Dependabot alerts are
   enabled and verified.
 
-Publication still requires selection of an immutable reviewed release commit,
-tagging, and the explicitly approved publication steps in the
+This closeout records the completed publication without retagging, editing the
+existing release, or changing GitHub settings. Remaining governance and future
+distribution decisions are listed in the
 [Release checklist](RELEASE_CHECKLIST.md).
 
 ## 3. Test environment
@@ -140,7 +142,7 @@ raw responses and payloads are not entity attributes; API error bodies are not
 read; endpoint logs are bounded; MQTT logs omit topics, identifiers, payloads,
 and credentials; production REST refuses redirects; and no diagnostics-download
 module exists. A bounded log-redaction helper and manual-review checklist are
-provided. Secret and history scans must be rerun on the final release commit.
+provided. Secret and history scans were rerun against the final release commit.
 
 ## 17. Automated validation summary
 
@@ -152,8 +154,8 @@ one optional real-Paho smoke test was skipped because Paho was intentionally not
 installed. All 31 Python files compiled in memory and parsed as AST, three JSON
 files and seven YAML files parsed, the 512×512 brand image passed PNG structure
 checks, and `git diff --check` passed. The merged HACS, Hassfest, and unit-test CI
-checks are green. The acceptance-signoff documentation diff is validated locally
-without network or equipment interaction.
+checks are green. The publication-closeout documentation diff is validated
+locally without network or equipment interaction.
 
 ## 18. Known limitations
 
@@ -164,18 +166,17 @@ without network or equipment interaction.
 - Provisional vendor-default MQTT credentials await author confirmation.
 - No collector-style confirmation claim for solenoid, latch, or powerbank.
 - Broad imported/generated endpoint catalogue retained for reference.
-- Not in the HACS default catalogue and not yet a published final release.
+- Published as HACS Custom Repository release `v0.1.0`; not in the HACS default catalogue.
 
-## 19. Remaining release decisions
+## 19. Remaining post-release decisions
 
-Repository transfer, final-URL verification, description, topics, Private
-Vulnerability Reporting, dependency graph, Dependabot alerts, merged CI, and
-final live acceptance from the transferred repository URL are complete.
+Repository transfer, final-URL verification, settings, merged CI, final live
+acceptance, release-commit selection, tag `v0.1.0`, GitHub release, and release
+notes publication are complete. The release is available at
+`https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0`.
 
 Maintainer/CODEOWNERS and future commit-identity policy remain unresolved
-non-publication governance items. Publication still requires selection of the
-final release commit, creation of tag `v0.1.0`, creation of the GitHub release,
-and publication of the release notes. An official GRIT webpage link and any HACS
+non-release governance items. An official GRIT webpage link and any HACS
 default-catalogue submission remain separate future decisions.
 
 ## 20. Final acceptance checklist
@@ -196,10 +197,14 @@ default-catalogue submission remain separate future decisions.
 - [x] Remaining intended controls passed explicitly authorized live acceptance.
 - [x] Canonical local repository URLs updated after transfer.
 - [x] HACS custom installation accepted against the final repository URL.
-- [ ] Release commit, tag, notes, and distribution steps are approved.
+- [x] Final release commit is `9464dbab1798cae3b2d0f538d0db3ed64d510884`.
+- [x] Tag `v0.1.0` points to the final release commit.
+- [x] GitHub release and release notes were published on 2026-08-04.
+- [ ] Official GRIT webpage link published.
+- [ ] HACS default catalogue submission decision made.
 
-**Acceptance status:** Accepted for v0.1.0 publication, subject only to final
-release commit, tag and publication steps.
+**Acceptance status:** Final acceptance completed; `v0.1.0` was published on
+2026-08-04.
 
 See [Release checklist](RELEASE_CHECKLIST.md) and return to the
 [README](../README.md).

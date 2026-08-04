@@ -7,8 +7,8 @@ GRIT Hub gates, RFID readers, GRITLock, collectors, and hub controls. It combine
 the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
-> **Release status:** `v0.1.0` is accepted for publication. It has not yet been
-> tagged or published and is not a HACS default-catalogue listing.
+> **Release status:** [`v0.1.0`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
+> was released on 2026-08-04. It is not a HACS default-catalogue listing.
 
 This project is experimental, provided as-is, and is not affiliated with,
 endorsed by, or supported by GRIT or GRIT Automation.
@@ -92,9 +92,10 @@ Custom Repository:
    **GRIT Hub**.
 
 The repository transfer to GoDeeGo Productions and the final URL are verified.
-`v0.1.0` has completed final live acceptance but has not yet been tagged or
-published. HACS Custom Repository acceptance against the final URL passed. See
-the full [Installation guide](docs/INSTALLATION.md).
+[`v0.1.0`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
+was published on 2026-08-04 after final live HACS Custom Repository acceptance
+against the transferred repository URL. See the full [Installation
+guide](docs/INSTALLATION.md).
 
 ## Manual installation
 
