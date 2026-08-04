@@ -183,6 +183,48 @@ class ApiHubTests(unittest.TestCase):
         )
         self.assertNotIn(FABRICATED_LEGACY_TOKEN, url)
 
+    def test_authenticated_requests_refuse_redirects_without_reading_body(self):
+        client = self.client()
+        calls = []
+
+        class FakeResponse:
+            status = 302
+            headers = {
+                "Location": "https://redirect-target.fabricated.invalid/api/hub"
+            }
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def text(self):
+                raise AssertionError("redirect response body was read")
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                calls.append((method, url, kwargs))
+                return FakeResponse()
+
+        client.session = FakeSession()
+        with self.assertRaises(API.GritHubApiError) as captured:
+            asyncio.run(client.request("GET", "/api/hub"))
+
+        self.assertEqual(len(calls), 1)
+        method, url, kwargs = calls[0]
+        self.assertEqual(method, "GET")
+        self.assertEqual(url, "https://api.fabricated.invalid/api/hub")
+        self.assertIs(kwargs["allow_redirects"], False)
+        self.assertEqual(captured.exception.http_status, 302)
+        self.assertEqual(
+            str(captured.exception),
+            "GET /api/hub failed: HTTP 302",
+        )
+        rendered = repr(captured.exception)
+        self.assertNotIn("redirect-target", rendered)
+        self.assertNotIn("fabricated-api-token", rendered)
+
     def test_malformed_hub_values_are_not_retained(self):
         client = self.client()
 

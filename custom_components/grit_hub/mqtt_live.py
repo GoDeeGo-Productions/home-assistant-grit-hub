@@ -576,7 +576,7 @@ class GritLiveMqtt:
             return
         payload = self._sanitize_payload(payload)
         if not payload:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "GRIT MQTT message rejected: no supported payload"
             )
             return
