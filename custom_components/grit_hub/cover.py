@@ -82,13 +82,13 @@ class GritHubGateCover(GritHubEntity, CoverEntity):
     async def _async_set_open(self, open_state: bool) -> None:
         if not self.coordinator.mqtt_connected:
             raise HomeAssistantError("Gate state could not be confirmed")
+        confirmation_boundary = self.coordinator.mqtt_receive_sequence
         try:
             await self.coordinator.api.set_device_state(
                 self.device_type,
                 self._device_id,
                 open_state,
             )
-            confirmation_boundary = self.coordinator.mqtt_receive_sequence
             confirmed = await self.coordinator.async_confirm_device_state(
                 self.device_type,
                 self._device_id,

@@ -58,13 +58,13 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
         return bool_state(observed)
 
     async def _async_set_state(self, state: bool) -> None:
+        confirmation_generation = self.coordinator.refresh_sequence
         try:
             await self.coordinator.api.set_device_state(
                 self.device_type,
                 self._device_id,
                 state,
             )
-            confirmation_generation = self.coordinator.refresh_sequence
             await asyncio.wait_for(
                 self.coordinator.async_request_refresh(),
                 timeout=DEVICE_CONFIRM_TIMEOUT,

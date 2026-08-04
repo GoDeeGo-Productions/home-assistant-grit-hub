@@ -1641,6 +1641,36 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             [("gate", "device-gate"), ("gate", "device-gate")],
         )
 
+    async def test_command_confirmation_accepts_already_applied_newer_mqtt(self):
+        api = FakeApi()
+        instance = self.coordinator(api)
+        instance.set_mqtt_connected(True)
+        boundary = instance.mqtt_receive_sequence
+
+        self.assertTrue(
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "gate",
+                "device-gate",
+                "s",
+                {"open": True},
+            )
+        )
+        observed_sequence = instance.mqtt_receive_sequence
+        self.assertEqual(observed_sequence, boundary + 1)
+
+        self.assertTrue(
+            await instance.async_confirm_device_state(
+                "gate",
+                "device-gate",
+                True,
+                after_sequence=boundary,
+                timeout=0.1,
+            )
+        )
+        self.assertEqual(instance.mqtt_receive_sequence, observed_sequence)
+        self.assertEqual(api.telemetry_calls, [("gate", "device-gate")])
+
     async def test_duplicate_command_telemetry_requests_are_coalesced(self):
         api = FakeApi()
         api.telemetry_entered = asyncio.Event()

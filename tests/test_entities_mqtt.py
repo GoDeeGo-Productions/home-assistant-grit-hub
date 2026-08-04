@@ -361,6 +361,9 @@ class FakeCoordinator:
         ) = None
         self.confirmation_block: asyncio.Event | None = None
         self.confirmation_calls: list[tuple[str, str, bool, int, float]] = []
+        self.device_state_observations: dict[
+            tuple[str, str], tuple[bool, int]
+        ] = {}
         self.rfid_confirmation_hook: Callable[[str, bool], bool] | None = None
         self.rfid_confirmation_block: asyncio.Event | None = None
         self.rfid_confirmation_calls: list[tuple[str, bool, int, float]] = []
@@ -396,6 +399,33 @@ class FakeCoordinator:
             )
         self.refresh_hook()
 
+    def observe_device_state(
+        self,
+        device_type: str,
+        device_id: Any,
+        state: bool,
+        *,
+        position: int | None = None,
+    ) -> int:
+        self.mqtt_receive_sequence += 1
+        normalized_id = str(device_id)
+        self.device_state_observations[(device_type, normalized_id)] = (
+            state,
+            self.mqtt_receive_sequence,
+        )
+        matches = [
+            device
+            for device in self.data["devices"].get(device_type, [])
+            if isinstance(device, dict)
+            and str(device.get("id")) == normalized_id
+        ]
+        if len(matches) == 1:
+            mqtt_state = dict(matches[0].get(MQTT_STATE_KEY, {}))
+            mqtt_state["open" if device_type == "gate" else "state"] = state
+            if position is not None:
+                mqtt_state["position"] = position
+            matches[0][MQTT_STATE_KEY] = mqtt_state
+        return self.mqtt_receive_sequence
 
     async def async_confirm_device_state(
         self,
@@ -415,6 +445,13 @@ class FakeCoordinator:
                 timeout,
             )
         )
+        if not self.mqtt_connected:
+            return False
+        observation = self.device_state_observations.get(
+            (device_type, str(device_id))
+        )
+        if observation is not None and observation[1] > after_sequence:
+            return observation[0] is expected
         if self.confirmation_block is not None:
             try:
                 await asyncio.wait_for(
@@ -1045,28 +1082,182 @@ class EntityMqttTests(unittest.TestCase):
             ],
         )
         self.assertFalse(rfid_lock.is_locked)
-    def test_mqtt_observed_during_command_cannot_confirm_gate(self):
+
+    def test_mqtt_observed_during_command_confirms_precommand_boundary(self):
         cover = self.gate_cover()
+        self.coordinator.mqtt_receive_sequence = 7
+        command_boundaries = []
 
         async def command_with_interleaved_mqtt(*_args: Any) -> None:
-            self.coordinator.mqtt_receive_sequence += 1
-            self.gate[MQTT_STATE_KEY] = {
-                "open": True,
-                "position": 100,
-            }
+            command_boundaries.append(
+                self.coordinator.mqtt_receive_sequence
+            )
+            self.coordinator.observe_device_state(
+                "gate",
+                GATE_ID,
+                True,
+                position=100,
+            )
 
         with mock.patch.object(
             self.coordinator.api,
             "set_device_state",
             side_effect=command_with_interleaved_mqtt,
-        ):
-            with self.assertRaisesRegex(HomeAssistantError, "confirmed"):
-                self.loop.run_until_complete(cover.async_open_cover())
+        ) as command:
+            self.loop.run_until_complete(cover.async_open_cover())
 
+        command.assert_awaited_once_with("gate", GATE_ID, True)
+        self.assertEqual(command_boundaries, [7])
+        self.assertEqual(self.coordinator.mqtt_receive_sequence, 8)
+        self.assertEqual(
+            self.coordinator.confirmation_calls,
+            [("gate", GATE_ID, True, 7, COVER_MODULE.DEVICE_CONFIRM_TIMEOUT)],
+        )
+        self.assertEqual(
+            self.coordinator.device_state_observations,
+            {("gate", GATE_ID): (True, 8)},
+        )
+        self.assertFalse(cover.is_closed)
+        self.assertEqual(cover.current_cover_position, 100)
+
+    def test_matching_precommand_gate_observation_cannot_confirm(self):
+        self.coordinator.observe_device_state(
+            "gate",
+            GATE_ID,
+            True,
+            position=100,
+        )
+        cover = self.gate_cover()
+        command = mock.AsyncMock()
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ), self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+            self.loop.run_until_complete(cover.async_open_cover())
+
+        command.assert_awaited_once_with("gate", GATE_ID, True)
         self.assertEqual(
             self.coordinator.confirmation_calls,
             [("gate", GATE_ID, True, 1, COVER_MODULE.DEVICE_CONFIRM_TIMEOUT)],
         )
+        self.assertFalse(cover.is_closed)
+        self.assertEqual(cover.current_cover_position, 100)
+
+    def test_contradictory_postcommand_gate_observation_fails_closed(self):
+        cover = self.gate_cover()
+
+        async def command_with_contradictory_mqtt(*_args: Any) -> None:
+            self.coordinator.observe_device_state(
+                "gate",
+                GATE_ID,
+                False,
+                position=0,
+            )
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            side_effect=command_with_contradictory_mqtt,
+        ), self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+            self.loop.run_until_complete(cover.async_open_cover())
+
+        self.assertEqual(
+            self.coordinator.confirmation_calls,
+            [("gate", GATE_ID, True, 0, COVER_MODULE.DEVICE_CONFIRM_TIMEOUT)],
+        )
+        self.assertTrue(cover.is_closed)
+        self.assertEqual(cover.current_cover_position, 0)
+
+    def test_gate_disconnect_during_command_fails_closed(self):
+        cover = self.gate_cover()
+
+        async def command_then_disconnect(*_args: Any) -> None:
+            self.coordinator.set_mqtt_connected(False)
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            side_effect=command_then_disconnect,
+        ), self.assertRaisesRegex(HomeAssistantError, "confirmed"):
+            self.loop.run_until_complete(cover.async_open_cover())
+
+        self.assertEqual(
+            self.coordinator.confirmation_calls,
+            [("gate", GATE_ID, True, 0, COVER_MODULE.DEVICE_CONFIRM_TIMEOUT)],
+        )
+        self.assertFalse(self.coordinator.mqtt_connected)
+        self.assertIsNone(cover.is_closed)
+
+    def test_gate_api_failure_never_enters_confirmation(self):
+        cover = self.gate_cover()
+        private_detail = "fabricated-private-gate-command-detail"
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            mock.AsyncMock(side_effect=RuntimeError(private_detail)),
+        ), self.assertRaises(HomeAssistantError) as error:
+            self.loop.run_until_complete(cover.async_open_cover())
+
+        self.assertEqual(
+            str(error.exception),
+            "Gate state could not be confirmed",
+        )
+        self.assertNotIn(private_detail, str(error.exception))
+        self.assertEqual(self.coordinator.confirmation_calls, [])
+        self.assertIsNone(cover.is_closed)
+
+    def test_refresh_boundaries_are_captured_before_switch_and_led_commands(self):
+        switch = self.device_switch()
+        led = NUMBER_MODULE.GritHubSystemLedBrightnessNumber(
+            self.coordinator
+        )
+        request_refresh = mock.AsyncMock()
+
+        async def switch_command(*_args: Any) -> None:
+            self.coordinator.refresh_sequence += 1
+            self.switch_device["state"] = True
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            side_effect=switch_command,
+        ) as command, mock.patch.object(
+            self.coordinator,
+            "async_request_refresh",
+            request_refresh,
+        ):
+            self.loop.run_until_complete(switch.async_turn_on())
+
+        command.assert_awaited_once_with("solenoid", SWITCH_ID, True)
+        request_refresh.assert_awaited_once_with()
+        self.assertTrue(switch.is_on)
+
+        request_refresh.reset_mock()
+
+        async def led_command(*_args: Any) -> None:
+            self.coordinator.refresh_sequence += 1
+            self.coordinator.hub_update_sequence = (
+                self.coordinator.refresh_sequence
+            )
+            self.coordinator.data["hub"]["systemLedBrightness"] = 55
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_system_led_brightness",
+            side_effect=led_command,
+        ) as command, mock.patch.object(
+            self.coordinator,
+            "async_request_refresh",
+            request_refresh,
+        ):
+            self.loop.run_until_complete(led.async_set_native_value(55))
+
+        command.assert_awaited_once_with(HUB_ID, 55)
+        request_refresh.assert_awaited_once_with()
+        self.assertEqual(led.native_value, 55)
 
     def test_non_rfid_stale_mqtt_cannot_confirm_rest_command(self):
         switch = self.device_switch()
