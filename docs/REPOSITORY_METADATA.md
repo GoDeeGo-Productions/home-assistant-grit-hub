@@ -1,20 +1,20 @@
 # Recommended repository metadata
 
-This file records approved owner decisions and remaining operational actions. It
-does not change GitHub settings, transfer a repository, or claim a public
-release.
+This file records approved owner decisions, verified transfer facts, and
+remaining operational actions. It does not change GitHub settings or claim a
+public release.
 
-## Approved ownership and destination
+## Verified ownership and destination
 
 - Organisation display name: **GoDeeGo Productions**
-- Intended GitHub namespace: `GoDeeGo-Productions`
-- Intended final repository URL:
+- GitHub namespace: `GoDeeGo-Productions`
+- Final repository URL:
   `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`
 - Approved licence: **MIT**
 - Approved security channel: **GitHub Private Vulnerability Reporting**
 
-The URL is intended, not operationally confirmed. Confirm it only after the
-organization/destination exists and the transfer succeeds.
+The organization/destination exists, the repository transfer is complete, the
+final URL is verified, and the local `origin` uses that URL.
 
 ## Description
 
@@ -35,10 +35,9 @@ organization/destination exists and the transfer succeeds.
 
 ## Release and search checklist
 
-- Create or verify GoDeeGo Productions under the approved
+- Preserve the verified GoDeeGo Productions ownership and
   `GoDeeGo-Productions` namespace.
-- Transfer the repository and verify the intended final URL before changing
-  canonical manifest links.
+- Keep canonical repository and issue links pointed at the verified final URL.
 - Enable and verify GitHub Private Vulnerability Reporting before publication.
 - Set the recommended description and topics through GitHub repository settings.
 - Keep README wording that naturally includes “GRIT Hub Home Assistant
@@ -52,11 +51,12 @@ organization/destination exists and the transfer succeeds.
   page only after the owner verifies it is authoritative.
 - Decide separately whether to submit to the HACS default catalogue after the
   custom-repository release is stable.
-- Recheck GitHub social preview, description, topics, release link, issues,
-  manifest URLs, and HACS installation after transfer.
+- Recheck GitHub social preview, description, topics, release link, issues, and
+  HACS installation before publication.
 
-No workflow badge is included until the intended final URL is operationally
-confirmed, because publishing a badge early would imply completed transfer.
+No workflow badge is included until final-URL CI and HACS acceptance are
+verified, because publishing a badge early would imply completed release
+validation.
 
 See [Repository transfer](REPOSITORY_TRANSFER.md) and the
 [Release checklist](RELEASE_CHECKLIST.md).

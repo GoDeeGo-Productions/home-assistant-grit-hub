@@ -15,16 +15,17 @@ device type, command, endpoint, platform, discovery field, or publishing path.
 ## 2. Build and repository state
 
 - Candidate version: `0.1.0` in `manifest.json`.
-- Baseline: local clean `main` commit `120dfe6`.
-- Preparation branch: `codex/wp-0003-v0.1.0-release-candidate`.
-- Publication state: no final release, tag, HACS submission, transfer, commit, or
-  push is asserted by this report.
-- Approved owner decisions: GoDeeGo Productions; intended namespace
-  `GoDeeGo-Productions`; intended final repository URL
+- Baseline: local clean `main` commit `ebec336`.
+- Final-URL update branch: `release/v0.1.0-final-urls`.
+- Publication state: the repository transfer and final URL are verified; no
+  final release, tag, HACS submission, or publication is asserted by this report.
+- Approved owner decisions: GoDeeGo Productions; namespace
+  `GoDeeGo-Productions`; final repository URL
   `https://github.com/GoDeeGo-Productions/home-assistant-grit-hub`; MIT licence;
   and GitHub Private Vulnerability Reporting.
-- Operational state: the destination, transfer, final-URL verification, and
-  Private Vulnerability Reporting enablement remain pending.
+- Operational state: the destination exists, the transfer and final URL are
+  verified, and local `origin` is updated. Private Vulnerability Reporting
+  enablement remains pending.
 
 Final release must select an immutable reviewed commit after all unchecked items
 in [Release checklist](RELEASE_CHECKLIST.md) are resolved.
@@ -164,24 +165,24 @@ CI after an authorized push and were not executed locally.
 
 ## 19. Remaining release decisions
 
-Resolved owner decisions are the **GoDeeGo Productions** display name, intended
-`GoDeeGo-Productions` namespace and final repository URL, MIT licence and
-copyright notice, and GitHub Private Vulnerability Reporting channel.
+Resolved owner and transfer items are the **GoDeeGo Productions** display name
+and `GoDeeGo-Productions` namespace, creation of the destination, completed
+transfer, verified final repository URL, updated local `origin`, MIT licence and
+copyright notice, and GitHub Private Vulnerability Reporting channel decision.
 
-Operational implementation remains pending: create or verify the organization
-and destination, transfer the repository, verify the final URL, enable Private
-Vulnerability Reporting, confirm maintainers/CODEOWNERS and future commit
-identity, set repository description/topics, update manifest links after
-transfer, complete CI and final live acceptance, select the release commit, and
-approve the tag, release notes, publication, and any HACS submission.
+Operational work remains: enable Private Vulnerability Reporting, confirm
+maintainers/CODEOWNERS and future commit identity, set repository
+description/topics, complete CI and final live acceptance including HACS at the
+final URL, select the release commit, and approve the tag, release notes,
+publication, and any HACS submission.
 
 ## 20. Final acceptance checklist
 
-- [x] GoDeeGo Productions display name and intended namespace approved.
+- [x] GoDeeGo Productions display name and namespace verified.
 - [x] MIT licence and GoDeeGo Productions copyright notice approved.
 - [x] GitHub Private Vulnerability Reporting approved as the security channel.
-- [ ] Organization/destination created or verified and repository transferred.
-- [ ] Final repository URL verified after transfer.
+- [x] Organization/destination created and repository transferred.
+- [x] Final repository URL and local Git remote verified after transfer.
 - [ ] GitHub Private Vulnerability Reporting enabled and verified.
 - [ ] Remaining maintainer and commit-identity decisions approved.
 - [ ] Full local validation is green on the final diff.
@@ -189,11 +190,12 @@ approve the tag, release notes, publication, and any HACS submission.
 - [ ] Secret and complete-history reviews are accepted.
 - [ ] Normal uninstall and deterministic clean reinstall are retested.
 - [ ] Remaining implemented controls are live-tested only under explicit safe authorization.
-- [ ] Final repository URLs and metadata are correct after transfer.
+- [x] Canonical local repository URLs updated after transfer.
+- [ ] HACS custom installation accepted against the final repository URL.
 - [ ] Release commit, tag, notes, and distribution steps are approved.
 
 **Acceptance status:** Conditionally accepted as v0.1.0 release candidate,
-subject to completion of the release checklist and owner decisions.
+subject to completion of the remaining release checklist and operational tasks.
 
 See [Release checklist](RELEASE_CHECKLIST.md) and return to the
 [README](../README.md).

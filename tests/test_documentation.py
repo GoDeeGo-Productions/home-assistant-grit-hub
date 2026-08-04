@@ -82,7 +82,7 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("0.1.0 — Pending release", changelog)
         self.assertIn("has not yet been tagged or published", changelog)
 
-    def test_approved_owner_decisions_and_pending_operations_are_consistent(
+    def test_transferred_repository_metadata_is_consistent(
         self,
     ) -> None:
         final_url = (
@@ -108,6 +108,7 @@ class DocumentationTests(unittest.TestCase):
         installation = (ROOT / "docs/INSTALLATION.md").read_text(
             encoding="utf-8"
         )
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         manifest = json.loads(
             (ROOT / "custom_components/grit_hub/manifest.json").read_text(
                 encoding="utf-8"
@@ -121,26 +122,54 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("Security > Report a vulnerability", security_flat)
         self.assertNotIn("no approved private security", security)
         self.assertIn(
-            "- [x] Organisation display name and intended namespace approved",
+            "- [x] Organisation display name and namespace verified",
             checklist,
         )
         self.assertIn("- [x] MIT licence approved and present", checklist)
         self.assertIn(
             "- [x] Security reporting channel approved", checklist
         )
-        self.assertIn("- [ ] Repository transferred", checklist)
+        self.assertIn("- [x] Repository transferred", checklist)
         self.assertIn(
-            "- [ ] Final repository URL confirmed after transfer", checklist
+            "- [x] Final repository URL confirmed after transfer", checklist
         )
         self.assertIn(
-            "- [ ] GitHub Private Vulnerability Reporting enabled and verified",
+            "- [x] Local Git remote updated to the final repository URL",
             checklist,
         )
-        for document in (transfer, metadata, acceptance, readme, installation):
+        for pending_item in (
+            "- [ ] GitHub Private Vulnerability Reporting enabled and verified",
+            "- [ ] GitHub description set",
+            "- [ ] GitHub topics set",
+            "- [ ] Maintainer ownership confirmed",
+            "- [ ] CODEOWNERS checked",
+            "- [ ] HACS custom install retested against final organisation URL",
+        ):
+            self.assertIn(pending_item, checklist)
+        self.assertIn(
+            "- [ ] HACS custom installation accepted against the final "
+            "repository URL.",
+            acceptance,
+        )
+        for document in (
+            transfer,
+            metadata,
+            acceptance,
+            readme,
+            installation,
+            agents,
+        ):
             self.assertIn("GoDeeGo Productions", document)
             self.assertIn("GoDeeGo-Productions", document)
             self.assertIn(final_url, document)
-        self.assertNotIn("GoDeeGo-Productions", json.dumps(manifest))
+        self.assertEqual(manifest["documentation"], final_url)
+        self.assertEqual(manifest["issue_tracker"], f"{final_url}/issues")
+        self.assertEqual(manifest["codeowners"], ["@dionweisler-ux"])
+        self.assertNotIn("has not yet been transferred", readme)
+        self.assertNotIn(
+            "final-URL verification remain pending", installation
+        )
+
     def test_documented_platforms_match_const_and_modules(self) -> None:
         const_tree = ast.parse(
             (ROOT / "custom_components/grit_hub/const.py").read_text(

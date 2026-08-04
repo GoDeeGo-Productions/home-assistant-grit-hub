@@ -17,8 +17,8 @@ Submit vulnerabilities privately through **GitHub Private Vulnerability
 Reporting** using this repository's **Security > Report a vulnerability**
 function. This is the approved reporting channel for GoDeeGo Productions.
 
-Private Vulnerability Reporting must be enabled and verified on the transferred
-repository before `v0.1.0` is published. If **Report a vulnerability** is not
+Private Vulnerability Reporting must be enabled and verified on this repository
+before `v0.1.0` is published. If **Report a vulnerability** is not
 available, do not disclose the vulnerability publicly. A minimal public issue
 may state only that the private reporting function is unavailable; it must not
 include vulnerability details, installation data, endpoints, or reproduction

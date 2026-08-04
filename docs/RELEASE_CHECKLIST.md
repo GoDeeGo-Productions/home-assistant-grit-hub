@@ -1,15 +1,16 @@
 # v0.1.0 release checklist
 
-Human and external-system tasks remain unchecked unless objective repository
-evidence proves completion. Checked owner decisions record approval only; they
-do not claim that the transfer, settings, or publication steps occurred.
+Human and external-system tasks remain unchecked unless objective evidence
+proves completion. Checked items record approved decisions or verified transfer
+facts; they do not claim that remaining settings or publication steps occurred.
 
 ## Repository decisions
 
-- [x] Organisation display name and intended namespace approved: GoDeeGo Productions / `GoDeeGo-Productions`
-- [ ] GitHub organisation and destination repository created or prepared
-- [ ] Repository transferred
-- [ ] Final repository URL confirmed after transfer
+- [x] Organisation display name and namespace verified: GoDeeGo Productions / `GoDeeGo-Productions`
+- [x] GitHub organisation and destination repository created
+- [x] Repository transferred
+- [x] Final repository URL confirmed after transfer
+- [x] Local Git remote updated to the final repository URL
 - [ ] Maintainer ownership confirmed
 - [ ] Future commit identity policy confirmed
 - [x] MIT licence approved and present
