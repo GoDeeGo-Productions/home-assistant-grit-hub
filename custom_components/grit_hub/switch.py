@@ -35,10 +35,19 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
 
     @property
     def available(self):
+        if (
+            self.device_type == "collector"
+            and self.coordinator.collector_online(self._device_id) is False
+        ):
+            return False
         return self.live_available
 
     @property
     def is_on(self):
+        if self.device_type == "collector":
+            # Individual REST supersedes older inventory/MQTT state; MQTT is a
+            # live supplement only when observed after the last detail read.
+            return self.coordinator.collector_display_state(self._device_id)
         mqtt_state = self.mqtt_state
         if "state" in mqtt_state:
             state = mqtt_state["state"]
@@ -58,6 +67,10 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
         return bool_state(observed)
 
     async def _async_set_state(self, state: bool) -> None:
+        if self.device_type == "collector":
+            await self._async_set_collector_state(state)
+            return
+
         confirmation_generation = self.coordinator.refresh_sequence
         try:
             await self.coordinator.api.set_device_state(
@@ -78,4 +91,30 @@ class GritHubDeviceSwitch(GritHubEntity, SwitchEntity):
             or self.coordinator.refresh_sequence <= confirmation_generation
             or self._observed_state() is not state
         ):
+            raise HomeAssistantError("Device state could not be confirmed")
+
+    async def _async_set_collector_state(self, state: bool) -> None:
+        """Command and confirm one collector from individual REST detail."""
+        confirmation_generation = self.coordinator.collector_state_generation(
+            self._device_id
+        )
+        try:
+            await self.coordinator.api.set_device_state(
+                "collector",
+                self._device_id,
+                state,
+            )
+            confirmed = await self.coordinator.async_confirm_collector_state(
+                self._device_id,
+                state,
+                after_generation=confirmation_generation,
+                timeout=DEVICE_CONFIRM_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            raise HomeAssistantError(
+                "Device state could not be confirmed"
+            ) from err
+        if not confirmed:
             raise HomeAssistantError("Device state could not be confirmed")

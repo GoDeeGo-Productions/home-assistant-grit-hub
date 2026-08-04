@@ -131,6 +131,14 @@ class FakeApi:
         self.rfid_detail_active = 0
         self.rfid_detail_max_active = 0
         self.rfid_detail_cancelled = 0
+        self.collector_details: dict[str, dict | list[dict]] = {}
+        self.collector_detail_calls: list[str] = []
+        self.collector_detail_errors: set[str] = set()
+        self.collector_detail_entered: asyncio.Event | None = None
+        self.collector_detail_release: asyncio.Event | None = None
+        self.collector_detail_active = 0
+        self.collector_detail_max_active = 0
+        self.collector_detail_cancelled = 0
         self.telemetry_calls: list[tuple[str, str]] = []
         self.telemetry_errors: set[tuple[str, str]] = set()
         self.telemetry_unexpected_errors: set[tuple[str, str]] = set()
@@ -194,6 +202,45 @@ class FakeApi:
         finally:
             self.rfid_detail_active -= 1
 
+    async def get_collector_device(self, device_id):
+        target = str(device_id)
+        self.collector_detail_calls.append(target)
+        self.collector_detail_active += 1
+        self.collector_detail_max_active = max(
+            self.collector_detail_max_active,
+            self.collector_detail_active,
+        )
+        try:
+            if self.collector_detail_entered is not None:
+                self.collector_detail_entered.set()
+            if self.collector_detail_release is not None:
+                await self.collector_detail_release.wait()
+            if target in self.collector_detail_errors:
+                raise coordinator_module.GritHubApiError(
+                    "fabricated collector detail failure"
+                )
+            detail = self.collector_details.get(
+                target,
+                {
+                    "id": target,
+                    "state": False,
+                    "stateChanging": False,
+                    "stateChangingTo": False,
+                    "isOnline": True,
+                },
+            )
+            if isinstance(detail, list):
+                if not detail:
+                    raise coordinator_module.GritHubApiError(
+                        "fabricated collector detail sequence exhausted"
+                    )
+                return deepcopy(detail.pop(0))
+            return deepcopy(detail)
+        except asyncio.CancelledError:
+            self.collector_detail_cancelled += 1
+            raise
+        finally:
+            self.collector_detail_active -= 1
     async def request_device_telemetry(self, device_type, device_id):
         target = (device_type, str(device_id))
         self.telemetry_calls.append(target)
@@ -3329,6 +3376,361 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(instance._reconciliation_task)
         await instance.async_stop_state_reconciliation()
         self.assertFalse(instance.start_state_reconciliation())
+
+class CollectorStateReconciliationTests(unittest.IsolatedAsyncioTestCase):
+    """Exercise collector individual-detail authority without network I/O."""
+
+    def setUp(self):
+        for attribute in ("connect", "connect_ex"):
+            patcher = mock.patch.object(
+                socket.socket,
+                attribute,
+                side_effect=AssertionError("network connection is forbidden"),
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(
+            socket,
+            "create_connection",
+            side_effect=AssertionError("network connection is forbidden"),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def coordinator(self, api, *, duplicate=False):
+        devices = {
+            device_type: [] for device_type in coordinator_module.DEVICE_TYPES
+        }
+        devices["collector"] = [
+            {
+                "id": "collector-fabricated",
+                "name": "Fabricated Collector",
+                "state": False,
+            }
+        ]
+        if duplicate:
+            devices["collector"].append(
+                {"id": "collector-fabricated", "name": "Duplicate"}
+            )
+        instance = coordinator_module.GritHubCoordinator(
+            object(),
+            api,
+            30,
+            expected_mqtt_hub_id="hub-expected",
+        )
+        instance.data = {
+            "devices": devices,
+            "hub": None,
+            "health": None,
+            "errors": {},
+        }
+        self.addAsyncCleanup(instance.async_stop_state_reconciliation)
+        return instance
+
+    @staticmethod
+    def detail(
+        state,
+        *,
+        changing=False,
+        changing_to=None,
+        online=True,
+        identifier="collector-fabricated",
+    ):
+        return {
+            "id": identifier,
+            "state": state,
+            "stateChanging": changing,
+            "stateChangingTo": state if changing_to is None else changing_to,
+            "isOnline": online,
+        }
+
+    async def test_startup_and_periodic_reads_replace_collection_state(self):
+        api = FakeApi(
+            {
+                "collector": [
+                    {
+                        "id": "collector-fabricated",
+                        "state": False,
+                    }
+                ]
+            }
+        )
+        api.collector_details["collector-fabricated"] = self.detail(True)
+        instance = self.coordinator(api)
+
+        refreshed = await instance._async_update_data()
+        instance.data = refreshed
+        collector = refreshed["devices"]["collector"][0]
+        self.assertTrue(instance.collector_state("collector-fabricated"))
+        self.assertNotIn("state", collector)
+        self.assertEqual(api.collector_detail_calls, ["collector-fabricated"])
+
+        api.collector_details["collector-fabricated"] = self.detail(False)
+        refreshed = await instance._async_update_data()
+        instance.data = refreshed
+        self.assertFalse(instance.collector_state("collector-fabricated"))
+        self.assertEqual(
+            api.collector_detail_calls,
+            ["collector-fabricated", "collector-fabricated"],
+        )
+
+    async def test_newer_mqtt_supplements_then_rest_supersedes_it(self):
+        api = FakeApi()
+        instance = self.coordinator(api)
+        instance._collector_state_request_sequence = 0
+        instance._mqtt_receive_sequence = 0
+        self.assertTrue(
+            instance._apply_current_collector_detail(
+                "collector-fabricated",
+                self.detail(True),
+                1,
+            )
+        )
+        instance._collector_state_request_sequence = 1
+        self.assertTrue(instance.collector_display_state("collector-fabricated"))
+
+        self.assertTrue(
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "collector",
+                "collector-fabricated",
+                "s",
+                {"s": False},
+            )
+        )
+        self.assertFalse(instance.collector_display_state("collector-fabricated"))
+
+        generation, detail = await instance._async_read_collector_detail(
+            "collector-fabricated"
+        )
+        detail["state"] = True
+        detail["stateChangingTo"] = True
+        self.assertTrue(
+            instance._apply_current_collector_detail(
+                "collector-fabricated",
+                detail,
+                generation,
+            )
+        )
+        self.assertTrue(instance.collector_display_state("collector-fabricated"))
+    async def test_failed_and_offline_reads_preserve_last_valid_state(self):
+        api = FakeApi(
+            {"collector": [{"id": "collector-fabricated", "state": False}]}
+        )
+        api.collector_details["collector-fabricated"] = self.detail(True)
+        instance = self.coordinator(api)
+        instance.data = await instance._async_update_data()
+        first_generation = instance.collector_state_generation(
+            "collector-fabricated"
+        )
+
+        api.collector_detail_errors.add("collector-fabricated")
+        failed = await instance._async_update_data()
+        instance.data = failed
+        self.assertTrue(instance.collector_state("collector-fabricated"))
+        self.assertEqual(
+            instance.collector_state_generation("collector-fabricated"),
+            first_generation,
+        )
+        self.assertIn("collector_state", failed["errors"])
+
+        api.collector_detail_errors.clear()
+        api.collector_details["collector-fabricated"] = self.detail(
+            False,
+            online=False,
+        )
+        instance.data = await instance._async_update_data()
+        self.assertTrue(instance.collector_state("collector-fabricated"))
+        self.assertFalse(instance.collector_online("collector-fabricated"))
+
+    async def test_exact_identity_and_strict_detail_are_required(self):
+        api = FakeApi()
+        instance = self.coordinator(api)
+        api.collector_details["collector-fabricated"] = self.detail(
+            True,
+            identifier="different-fabricated-collector",
+        )
+        self.assertFalse(
+            await instance.async_confirm_collector_state(
+                "collector-fabricated",
+                True,
+                after_generation=0,
+                timeout=1,
+            )
+        )
+        self.assertIsNone(instance.collector_state("collector-fabricated"))
+
+        duplicate = self.coordinator(FakeApi(), duplicate=True)
+        self.assertFalse(
+            await duplicate._async_refresh_collector_states(
+                duplicate.data["devices"]
+            )
+        )
+        self.assertEqual(duplicate.api.collector_detail_calls, [])
+
+    async def test_fresh_settled_detail_confirms_and_stale_state_does_not(self):
+        api = FakeApi()
+        instance = self.coordinator(api)
+        self.assertTrue(
+            instance._apply_collector_detail(
+                instance.data["devices"],
+                "collector-fabricated",
+                self.detail(True),
+                1,
+                0,
+            )
+        )
+        instance._collector_state_request_sequence = 1
+        api.collector_details["collector-fabricated"] = self.detail(False)
+
+        self.assertFalse(
+            await instance.async_confirm_collector_state(
+                "collector-fabricated",
+                True,
+                after_generation=1,
+                timeout=1,
+            )
+        )
+        self.assertEqual(api.collector_detail_calls, ["collector-fabricated"])
+
+        api.collector_details["collector-fabricated"] = self.detail(True)
+        self.assertTrue(
+            await instance.async_confirm_collector_state(
+                "collector-fabricated",
+                True,
+                after_generation=2,
+                timeout=1,
+            )
+        )
+
+    async def test_detail_arriving_during_command_boundary_can_confirm(self):
+        api = FakeApi()
+        instance = self.coordinator(api)
+        boundary = instance.collector_state_generation("collector-fabricated")
+        generation, detail = await instance._async_read_collector_detail(
+            "collector-fabricated"
+        )
+        self.assertTrue(
+            instance._apply_current_collector_detail(
+                "collector-fabricated",
+                detail,
+                generation,
+            )
+        )
+        calls_before_confirmation = list(api.collector_detail_calls)
+
+        self.assertTrue(
+            await instance.async_confirm_collector_state(
+                "collector-fabricated",
+                False,
+                after_generation=boundary,
+                timeout=1,
+            )
+        )
+        self.assertEqual(api.collector_detail_calls, calls_before_confirmation)
+
+    async def test_matching_transition_polls_until_settled(self):
+        api = FakeApi()
+        api.collector_details["collector-fabricated"] = [
+            self.detail(False, changing=True, changing_to=True),
+            self.detail(True, changing=False, changing_to=True),
+        ]
+        instance = self.coordinator(api)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_COLLECTOR_CONFIRM_INTERVAL",
+            0,
+        ):
+            confirmed = await instance.async_confirm_collector_state(
+                "collector-fabricated",
+                True,
+                after_generation=0,
+                timeout=1,
+            )
+
+        self.assertTrue(confirmed)
+        self.assertEqual(
+            api.collector_detail_calls,
+            ["collector-fabricated", "collector-fabricated"],
+        )
+        self.assertTrue(instance.collector_state("collector-fabricated"))
+
+    async def test_contradictory_transition_and_settled_state_fail_closed(self):
+        for detail in (
+            self.detail(False, changing=True, changing_to=False),
+            self.detail(False, changing=False, changing_to=True),
+            self.detail(True, changing=False, changing_to=True, online=False),
+        ):
+            with self.subTest(detail=detail):
+                api = FakeApi()
+                api.collector_details["collector-fabricated"] = detail
+                instance = self.coordinator(api)
+                self.assertFalse(
+                    await instance.async_confirm_collector_state(
+                        "collector-fabricated",
+                        True,
+                        after_generation=0,
+                        timeout=1,
+                    )
+                )
+                self.assertEqual(
+                    api.collector_detail_calls,
+                    ["collector-fabricated"],
+                )
+
+    async def test_api_failure_and_transition_timeout_fail_closed(self):
+        api = FakeApi()
+        api.collector_detail_errors.add("collector-fabricated")
+        instance = self.coordinator(api)
+        self.assertFalse(
+            await instance.async_confirm_collector_state(
+                "collector-fabricated",
+                True,
+                after_generation=0,
+                timeout=1,
+            )
+        )
+
+        blocked_api = FakeApi()
+        blocked_api.collector_detail_entered = asyncio.Event()
+        blocked_api.collector_detail_release = asyncio.Event()
+        blocked = self.coordinator(blocked_api)
+        confirmation = asyncio.create_task(
+            blocked.async_confirm_collector_state(
+                "collector-fabricated",
+                False,
+                after_generation=0,
+                timeout=0.01,
+            )
+        )
+        await asyncio.wait_for(
+            blocked_api.collector_detail_entered.wait(),
+            timeout=1,
+        )
+        self.assertFalse(await asyncio.wait_for(confirmation, timeout=1))
+        self.assertEqual(blocked_api.collector_detail_cancelled, 1)
+        self.assertEqual(blocked._rfid_read_tasks, set())
+
+    async def test_confirmation_cancellation_propagates_and_cleans_up(self):
+        api = FakeApi()
+        api.collector_detail_entered = asyncio.Event()
+        api.collector_detail_release = asyncio.Event()
+        instance = self.coordinator(api)
+        confirmation = asyncio.create_task(
+            instance.async_confirm_collector_state(
+                "collector-fabricated",
+                True,
+                after_generation=0,
+                timeout=1,
+            )
+        )
+        await asyncio.wait_for(api.collector_detail_entered.wait(), timeout=1)
+        confirmation.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(confirmation, timeout=1)
+        self.assertEqual(api.collector_detail_cancelled, 1)
+        self.assertEqual(instance._rfid_read_tasks, set())
 
 if __name__ == "__main__":
     unittest.main()

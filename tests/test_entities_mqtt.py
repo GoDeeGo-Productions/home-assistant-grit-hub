@@ -367,6 +367,9 @@ class FakeCoordinator:
         self.rfid_confirmation_hook: Callable[[str, bool], bool] | None = None
         self.rfid_confirmation_block: asyncio.Event | None = None
         self.rfid_confirmation_calls: list[tuple[str, bool, int, float]] = []
+        self.collector_confirmation_calls: list[
+            tuple[str, bool, int, float]
+        ] = []
         self.gritlock_confirmation_hook: Callable[[bool], bool] | None = None
         self.gritlock_confirmation_block: asyncio.Event | None = None
         self.gritlock_confirmation_calls: list[tuple[bool, int, float]] = []
@@ -513,6 +516,78 @@ class FakeCoordinator:
         if self.rfid_confirmation_hook is None:
             return False
         return self.rfid_confirmation_hook(normalized_id, expected_enabled)
+    def _collector_record(self, device_id: Any) -> dict[str, Any] | None:
+        matches = [
+            device
+            for device in self.data["devices"].get("collector", [])
+            if isinstance(device, dict)
+            and str(device.get("id")).strip() == str(device_id).strip()
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def collector_state(self, device_id: Any) -> bool | None:
+        record = self._collector_record(device_id)
+        state = record.get("_grit_collector_state") if record else None
+        return state if isinstance(state, bool) else None
+
+    def collector_display_state(self, device_id: Any) -> bool | None:
+        record = self._collector_record(device_id)
+        if record is None:
+            return None
+        rest_state = record.get("_grit_collector_state")
+        boundary = record.get("_grit_collector_mqtt_boundary", 0)
+        mqtt_state = record.get(MQTT_STATE_KEY)
+        observations = (
+            mqtt_state.get("_field_observations")
+            if isinstance(mqtt_state, dict)
+            else None
+        )
+        sequence = observations.get("state") if isinstance(observations, dict) else None
+        if (
+            isinstance(sequence, int)
+            and sequence > boundary
+            and isinstance(mqtt_state.get("state"), bool)
+        ):
+            return mqtt_state["state"]
+        if isinstance(rest_state, bool):
+            return rest_state
+        fallback = mqtt_state.get("state") if isinstance(mqtt_state, dict) else None
+        return fallback if isinstance(fallback, bool) else None
+    def collector_online(self, device_id: Any) -> bool | None:
+        record = self._collector_record(device_id)
+        online = record.get("_grit_collector_online") if record else None
+        return online if isinstance(online, bool) else None
+
+    def collector_state_generation(self, device_id: Any) -> int:
+        record = self._collector_record(device_id)
+        generation = (
+            record.get("_grit_collector_state_generation") if record else None
+        )
+        return generation if isinstance(generation, int) else 0
+
+    async def async_confirm_collector_state(
+        self,
+        device_id: Any,
+        expected: bool,
+        *,
+        after_generation: int,
+        timeout: float,
+    ) -> bool:
+        normalized_id = str(device_id)
+        self.collector_confirmation_calls.append(
+            (normalized_id, expected, after_generation, timeout)
+        )
+        record = self._collector_record(normalized_id)
+        if record is None:
+            return False
+        generation = record.get("_grit_collector_state_generation")
+        return (
+            isinstance(generation, int)
+            and generation > after_generation
+            and record.get("_grit_collector_online") is True
+            and record.get("_grit_collector_state_changing") is False
+            and record.get("_grit_collector_state") is expected
+        )
     def begin_gritlock_generation(self, after_sequence: int) -> int | None:
         if not self.mqtt_connected or after_sequence != self.mqtt_receive_sequence:
             return None
@@ -646,7 +721,157 @@ class EntityMqttTests(unittest.TestCase):
         return SWITCH_MODULE.GritHubDeviceSwitch(
             self.coordinator, "solenoid", self.switch_device
         )
+    def collector_switch(self):
+        collectors = self.coordinator.data["devices"]["collector"]
+        if not collectors:
+            collectors.append(
+                {
+                    "id": "collector-fabricated",
+                    "name": "Fabricated Collector",
+                    "state": True,
+                    "_grit_collector_state": False,
+                    "_grit_collector_state_changing": False,
+                    "_grit_collector_state_changing_to": False,
+                    "_grit_collector_online": True,
+                    "_grit_collector_state_generation": 1,
+                    "_grit_collector_mqtt_boundary": 0,
+                }
+            )
+        return SWITCH_MODULE.GritHubDeviceSwitch(
+            self.coordinator,
+            "collector",
+            collectors[0],
+        )
 
+    def test_collector_uses_individual_state_with_mqtt_live_updates(self):
+        switch = self.collector_switch()
+        collector = self.coordinator.data["devices"]["collector"][0]
+
+        self.assertFalse(switch.is_on)
+        collector["_grit_collector_state"] = True
+        self.assertTrue(switch.is_on)
+        collector[MQTT_STATE_KEY] = {
+            "state": False,
+            "online": True,
+            "_field_observations": {"state": 1},
+        }
+        self.assertFalse(switch.is_on)
+        collector[MQTT_STATE_KEY].pop("state")
+        self.assertTrue(switch.is_on)
+
+        collector["_grit_collector_online"] = False
+        self.assertFalse(switch.available)
+        self.assertTrue(switch.is_on)
+
+    def test_collector_commands_capture_detail_boundary_before_command(self):
+        switch = self.collector_switch()
+        collector = self.coordinator.data["devices"]["collector"][0]
+        observed_boundaries = []
+
+        async def command(device_type, device_id, state):
+            self.assertEqual(device_type, "collector")
+            self.assertEqual(device_id, "collector-fabricated")
+            observed_boundaries.append(
+                collector["_grit_collector_state_generation"]
+            )
+            collector["_grit_collector_state"] = state
+            collector["_grit_collector_state_changing"] = False
+            collector["_grit_collector_state_changing_to"] = state
+            collector["_grit_collector_online"] = True
+            collector["_grit_collector_state_generation"] += 1
+
+        command_mock = mock.AsyncMock(side_effect=command)
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command_mock,
+        ):
+            self.loop.run_until_complete(switch.async_turn_on())
+            self.loop.run_until_complete(switch.async_turn_off())
+
+        self.assertEqual(
+            command_mock.await_args_list,
+            [
+                mock.call("collector", "collector-fabricated", True),
+                mock.call("collector", "collector-fabricated", False),
+            ],
+        )
+        self.assertEqual(observed_boundaries, [1, 2])
+        self.assertEqual(
+            self.coordinator.collector_confirmation_calls,
+            [
+                (
+                    "collector-fabricated",
+                    True,
+                    1,
+                    SWITCH_MODULE.DEVICE_CONFIRM_TIMEOUT,
+                ),
+                (
+                    "collector-fabricated",
+                    False,
+                    2,
+                    SWITCH_MODULE.DEVICE_CONFIRM_TIMEOUT,
+                ),
+            ],
+        )
+        self.assertEqual(self.coordinator.refresh_calls, 0)
+        self.assertFalse(switch.is_on)
+
+    def test_collector_failure_is_generic_and_cancellation_propagates(self):
+        switch = self.collector_switch()
+        private_detail = "fabricated-private-collector-detail"
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            mock.AsyncMock(
+                side_effect=GritHubApiError(private_detail)
+            ),
+        ), self.assertRaises(HomeAssistantError) as error:
+            self.loop.run_until_complete(switch.async_turn_on())
+        self.assertEqual(
+            str(error.exception),
+            "Device state could not be confirmed",
+        )
+        self.assertNotIn(private_detail, str(error.exception))
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            mock.AsyncMock(side_effect=asyncio.CancelledError),
+        ), self.assertRaises(asyncio.CancelledError):
+            self.loop.run_until_complete(switch.async_turn_off())
+    def test_collector_unconfirmed_transition_raises_without_full_refresh(self):
+        switch = self.collector_switch()
+        command = mock.AsyncMock()
+        confirmation = mock.AsyncMock(return_value=False)
+
+        with mock.patch.object(
+            self.coordinator.api,
+            "set_device_state",
+            command,
+        ), mock.patch.object(
+            self.coordinator,
+            "async_confirm_collector_state",
+            confirmation,
+        ), self.assertRaisesRegex(
+            HomeAssistantError,
+            "Device state could not be confirmed",
+        ):
+            self.loop.run_until_complete(switch.async_turn_off())
+
+        command.assert_awaited_once_with(
+            "collector",
+            "collector-fabricated",
+            False,
+        )
+        confirmation.assert_awaited_once_with(
+            "collector-fabricated",
+            False,
+            after_generation=1,
+            timeout=SWITCH_MODULE.DEVICE_CONFIRM_TIMEOUT,
+        )
+        self.assertEqual(self.coordinator.refresh_calls, 0)
     def test_rfid_is_only_a_lock_and_system_gritlock_is_unique(self):
         rfid = {
             "id": "rfid-platform-test",
