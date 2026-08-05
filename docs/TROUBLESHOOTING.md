@@ -90,17 +90,27 @@ state rather than inventing one. The default poll is a 30-second fallback.
 ## GRITLock is Unknown
 
 GRITLock uses `gls` from exact current-generation `/gl` messages as live state.
-A complete valid REST `gritLockEnabled` set defines required participants when
-available. Without usable REST metadata, two firmware patterns are supported per
-fresh quiet-settled generation: a mixed burst uses exactly the triggers reporting
-`gte=1`, while an all-`gte=0` burst uses every fresh observed trigger. The choice
-is not carried into later generations.
+A nonempty, complete, valid REST `gritLockEnabled` set defines required
+participants when available. A complete list with no enabled triggers is not a
+usable participant set. Without usable REST metadata, two firmware patterns are
+supported per fresh quiet-settled generation: a mixed burst uses exactly the
+triggers reporting `gte=1`, while an all-`gte=0` burst uses every fresh observed
+trigger. The choice is not carried into later generations.
 
 Zero observations, participant-limit overflow, missing REST-required messages,
 disagreement within the selected participant set, stale evidence, timeout,
-disconnect, cancellation, or an unsettled generation correctly produces Unknown
-or fails confirmation. After MQTT disconnect GRITLock may fall back to valid
+disconnect, cancellation, generation replacement, or an unsettled generation
+correctly produces Unknown or fails confirmation. Timeout never settles a
+partial generation. After MQTT disconnect GRITLock may fall back to valid
 provisional strict REST trigger fields.
+
+PR #25 corrected dual participant selection but did not correct the remaining
+command-confirmation path. Live command delivery and the physical transition
+succeeded while confirmation and immediate entity propagation failed. The
+v0.1.2 correction remains blocked from publication until Lock and Unlock pass on
+both acceptance systems. Until then, if equipment changes but Home Assistant
+reports failed confirmation, do not repeat commands; verify the physical site
+safely and retain only redacted logs.
 
 ## Collector command waits or fails
 

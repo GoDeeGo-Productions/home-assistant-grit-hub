@@ -8,8 +8,11 @@ unchecked and must not be completed.
 
 - [x] All-`gte=0` Lock and Unlock passed on Jeff's installation
 - [x] Mixed-`gte` participant regression reproduced on Dion's installation
+- [x] PR #25 corrected dual-mode participant selection
+- [x] Post-PR #25 command delivery and physical transition succeeded on Dion's installation
+- [x] Post-PR #25 confirmation and immediate entity propagation failed on Dion's installation
 - [x] v0.1.1 candidate superseded by the v0.1.2 corrective process
-- [ ] Corrective v0.1.2 Lock and Unlock pass on both installations
+- [ ] Corrective v0.1.2 Lock, Unlock, confirmation, and immediate entity state pass on both installations
 
 ## Candidate validation
 

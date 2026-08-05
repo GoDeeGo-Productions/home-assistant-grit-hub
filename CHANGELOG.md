@@ -13,6 +13,11 @@ versioning for public releases.
   triggers when any are present, or all fresh observed triggers when none report
   `gte=1`. `gls` remains authoritative and all existing fail-closed generation
   rules remain in force.
+- Corrected the remaining GRITLock command-confirmation defect after PR #25:
+  a complete but empty REST participant set no longer suppresses the bounded
+  all-`gte=0` MQTT fallback. Explicit command generations replace stale active
+  evidence, settle only after the natural quiet period, publish the settled
+  state immediately, and never use timeout handling to settle partial input.
 
 ## 0.1.1 — Pending release
 

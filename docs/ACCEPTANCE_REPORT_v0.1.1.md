@@ -32,21 +32,39 @@ The all-zero result proves that `gte=0` is not a universal exclusion rule. The
 mixed result proves that, when any fresh observation has `gte=1`, the exact
 fresh `gte=1` subset must define MQTT fallback participants.
 
+## Post-PR #25 confirmation result
+
+PR #25 corrected that participant-selection defect, but it did not correct the
+command-confirmation lifecycle. Subsequent acceptance on Dion's installation
+proved that an Unlock REST command was delivered and the physical hub changed
+state. A fresh two-trigger generation then reported unanimous `gls=0` with no
+`gte=1` observation, yet Home Assistant reported failed confirmation and did not
+publish the unlocked entity state.
+
+The remaining defect was the REST precedence boundary: a complete trigger list
+with no `gritLockEnabled=true` value was treated as an authoritative empty
+participant set. That bypassed the all-`gte=0` MQTT fallback and settled the
+fresh generation as Unknown. The timeout path also attempted settlement, which
+was inconsistent with the required natural quiet boundary. The v0.1.2
+correction treats an empty REST set as unusable, replaces stale command
+generations, and permits only natural quiet settlement to publish state.
+
 ## Corrective process
 
 The v0.1.1 candidate is superseded by the v0.1.2 corrective process. The safe
 per-generation fallback is:
 
-1. Use a complete, valid REST `gritLockEnabled` participant set when available.
+1. Use a nonempty, complete, valid REST `gritLockEnabled` participant set when available.
 2. Otherwise, after quiet settlement, use exactly the fresh `gte=1` trigger IDs
    if that subset is nonempty.
 3. If no fresh observation has `gte=1`, use all unique triggers observed in that
    fresh generation.
 4. Never persist MQTT-derived participant IDs into an unrelated generation.
 
-Both installations require explicit Lock and Unlock retesting before v0.1.2
-publication. The original fail-closed bounds, ordering, cancellation, disconnect,
-overflow, timeout, and stale-generation requirements remain release gates.
+Both installations require explicit Lock and Unlock retesting of the corrected
+command-confirmation and immediate entity-state path before v0.1.2 publication.
+The original fail-closed bounds, ordering, cancellation, disconnect, overflow,
+timeout, and stale-generation requirements remain release gates.
 
 ## Original automated validation
 
@@ -62,6 +80,20 @@ The v0.1.1 release-preparation validation on 2026-08-05 was network-free:
 Those results did not encode the later two-system mixed-generation evidence and
 do not make the superseded candidate acceptable for publication.
 
+## Current corrective automated validation
+
+The v0.1.2 command-confirmation correction was validated without network or
+physical-device access:
+
+- 34 focused GRITLock coordinator and entity tests passed.
+- 10 documentation tests passed.
+- 373 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
+- 31 tracked Python files compiled in memory and parsed as AST.
+- 3 JSON files and 7 YAML files parsed successfully.
+- `git diff --check` and the added-line sensitive-value scan passed.
+
+These automated results do not replace the required Lock and Unlock acceptance
+on both live systems.
 ## Publication state
 
 `v0.1.0` remains the latest published release. No `v0.1.1` tag, GitHub release,

@@ -1540,7 +1540,10 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if len(unique) > _MAX_GRITLOCK_OBSERVATIONS:
             complete = False
             unique = unique[:_MAX_GRITLOCK_OBSERVATIONS]
-        return frozenset(unique), metadata_seen and complete
+        # An empty REST set cannot identify any participant. Treat it as
+        # unavailable so one settled MQTT generation can apply the bounded
+        # participant-selection fallback instead of remaining Unknown.
+        return frozenset(unique), bool(unique) and metadata_seen and complete
 
     def _cancel_gritlock_settle_task(self) -> None:
         """Cancel the one bounded generation-settlement task."""
@@ -1590,6 +1593,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         self._cancel_gritlock_settle_task()
         generation = self._new_gritlock_generation(after_sequence)
+        # A new explicit command invalidates any incomplete prior generation.
+        # Wake its waiter so it fails closed instead of lingering until timeout.
+        self._wake_mqtt_state_waiters()
         return generation.generation_id
 
     def cancel_gritlock_generation(self, generation_id: int) -> bool:
@@ -2112,9 +2118,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             return await asyncio.wait_for(wait_for_result(), timeout=timeout)
         except asyncio.TimeoutError:
-            self._settle_gritlock_generation(generation_id)
-            settled = self._gritlock_generation_results.get(generation_id)
-            return settled is not None and settled.state is expected
+            # Only the quiet-period task may settle a GRITLock generation.
+            # A command timeout must never turn an active or partial burst into
+            # authoritative state, but may consume a result that already
+            # settled naturally at the deadline boundary.
+            return result() is True
 
     def _apply_gritlock_observation(
         self,

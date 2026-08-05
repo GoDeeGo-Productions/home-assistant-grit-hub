@@ -1877,6 +1877,30 @@ class EntityMqttTests(unittest.TestCase):
             ],
         )
 
+    def test_gritlock_entity_changes_only_after_authoritative_confirmation(self):
+        entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)
+        self.coordinator.gritlock_state_value = False
+        self.coordinator.gritlock_confirmation_block = asyncio.Event()
+
+        def confirm(expected: bool) -> bool:
+            self.coordinator.gritlock_state_value = expected
+            return True
+
+        self.coordinator.gritlock_confirmation_hook = confirm
+        command = self.loop.create_task(entity.async_lock())
+        self.loop.run_until_complete(asyncio.sleep(0))
+
+        self.assertEqual(
+            self.coordinator.api.hub_calls,
+            [("set_gritlock", True)],
+        )
+        self.assertFalse(entity.is_locked)
+        self.assertFalse(command.done())
+
+        self.coordinator.gritlock_confirmation_block.set()
+        self.loop.run_until_complete(command)
+        self.assertTrue(entity.is_locked)
+
     def test_gritlock_does_not_command_without_mqtt(self):
         entity = LOCK_MODULE.GritHubSystemLock(self.coordinator)
         self.coordinator.mqtt_connected = False
