@@ -91,6 +91,7 @@ _INVALID = object()
 class _GritlockObservation:
     """One bounded authoritative trigger /gl observation."""
 
+    explicitly_participating: bool
     locked: bool
     receive_sequence: int
     received_monotonic: float
@@ -1607,11 +1608,17 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> tuple[bool | None, frozenset[str]]:
         if generation.overflowed:
             return None, frozenset()
-        required = (
-            generation.rest_participants
-            if generation.rest_participants_usable
-            else frozenset(generation.observations)
-        )
+        if generation.rest_participants_usable:
+            required = generation.rest_participants
+        else:
+            explicit_participants = frozenset(
+                trigger_id
+                for trigger_id, observation in generation.observations.items()
+                if observation.explicitly_participating
+            )
+            required = explicit_participants or frozenset(
+                generation.observations
+            )
         if len(required) > _MAX_GRITLOCK_OBSERVATIONS:
             return None, frozenset()
         if not required or not required.issubset(generation.observations):
@@ -2115,11 +2122,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         payload: dict[str, Any],
     ) -> bool:
         """Add strict trigger /gl evidence to one bounded generation."""
-        advisory_participating = _strict_binary_bool(
+        explicitly_participating = _strict_binary_bool(
             payload.get("gte", _INVALID)
         )
         locked = _strict_binary_bool(payload.get("gls", _INVALID))
-        if advisory_participating is _INVALID or locked is _INVALID:
+        if explicitly_participating is _INVALID or locked is _INVALID:
             _LOGGER.debug(
                 "GRIT MQTT message rejected: invalid GRITLock state"
             )
@@ -2159,6 +2166,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._mqtt_receive_sequence += 1
         generation.observations[trigger_id] = _GritlockObservation(
+            explicitly_participating=explicitly_participating,
             locked=locked,
             receive_sequence=self._mqtt_receive_sequence,
             received_monotonic=now,

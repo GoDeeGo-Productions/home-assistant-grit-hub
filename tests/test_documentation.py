@@ -101,19 +101,38 @@ class DocumentationTests(unittest.TestCase):
         )
         self.assertEqual(manifest["version"], "0.1.1")
         self.assertIn(
-            "`v0.1.1` is the current release candidate",
+            "a `v0.1.2` corrective patch candidate is in development",
+            readme_flat,
+        )
+        self.assertIn(
+            "The `v0.1.1` release candidate is superseded",
             readme_flat,
         )
         self.assertIn("remains the latest published release", readme_flat)
         self.assertIn("0.1.0 — 2026-08-04", changelog)
         self.assertIn("0.1.1 — Pending release", changelog)
+        self.assertIn(
+            "Corrected the v0.1.1 GRITLock participant-selection regression",
+            changelog,
+        )
         acceptance_v011_flat = " ".join(acceptance_v011.split())
         self.assertIn(
-            "Conditionally accepted as v0.1.1 release candidate, subject to "
-            "live verification and publication steps.",
+            "Superseded by the v0.1.2 corrective patch process; `v0.1.1` is "
+            "not accepted for publication.",
             acceptance_v011_flat,
         )
         self.assertIn("Jeff's installation", acceptance_v011)
+        self.assertIn("Dion's installation", acceptance_v011)
+        for supersession_item in (
+            "- [x] All-`gte=0` Lock and Unlock passed on Jeff's installation",
+            "- [x] Mixed-`gte` participant regression reproduced on Dion's "
+            "installation",
+            "- [x] v0.1.1 candidate superseded by the v0.1.2 corrective "
+            "process",
+            "- [ ] Corrective v0.1.2 Lock and Unlock pass on both "
+            "installations",
+        ):
+            self.assertIn(supersession_item, checklist_v011)
         for pending_item in (
             "- [ ] Manifest version confirmed as `0.1.1`",
             "- [ ] Full unit suite and CI green",
@@ -319,7 +338,7 @@ class DocumentationTests(unittest.TestCase):
         ):
             self.assertIn(expected, architecture)
 
-    def test_gritlock_gte_zero_compatibility_is_documented(self) -> None:
+    def test_gritlock_dual_participant_modes_are_documented(self) -> None:
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(
             encoding="utf-8"
         )
@@ -329,9 +348,14 @@ class DocumentationTests(unittest.TestCase):
         )
         self.assertIn("`gls` is the live lock state", architecture)
         self.assertIn("REST `gritLockEnabled` participant set", architecture)
-        self.assertIn("`gte` is strictly validated but advisory", architecture)
-        self.assertIn("`gte` remains advisory", entities)
-        self.assertIn("`gte=0` is compatible", troubleshooting)
+        self.assertIn("one or more observations have `gte=1`", architecture)
+        self.assertIn(
+            "MQTT-derived participants are not persisted",
+            architecture,
+        )
+        self.assertIn("an all-`gte=0`", entities)
+        self.assertIn("two firmware patterns are supported", troubleshooting)
+        self.assertIn("mixed burst uses exactly", troubleshooting)
 
     def test_mqtt_topic_scopes_and_safe_diagnostic_command_are_accurate(self) -> None:
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(

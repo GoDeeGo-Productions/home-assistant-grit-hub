@@ -5,7 +5,14 @@ versioning for public releases.
 
 ## Unreleased
 
-No unreleased changes are recorded.
+### Fixed
+
+- Corrected the v0.1.1 GRITLock participant-selection regression for mixed
+  trigger generations. Valid REST participant metadata still takes precedence;
+  otherwise each fresh quiet-settled `/gl` generation uses exactly its `gte=1`
+  triggers when any are present, or all fresh observed triggers when none report
+  `gte=1`. `gls` remains authoritative and all existing fail-closed generation
+  rules remain in force.
 
 ## 0.1.1 — Pending release
 
@@ -18,7 +25,8 @@ No unreleased changes are recorded.
   Empty, incomplete, contradictory, stale, overflowing, timed-out, or unsettled
   generations continue to fail closed.
 
-This release candidate has not yet been tagged or published.
+This candidate was superseded by the corrective v0.1.2 process and was not
+tagged or published.
 
 ## 0.1.0 — 2026-08-04
 
