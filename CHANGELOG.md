@@ -5,11 +5,20 @@ versioning for public releases.
 
 ## Unreleased
 
+No unreleased changes are recorded.
+
+## 0.1.1 — Pending release
+
 ### Fixed
 
-- Made GRITLock participant selection compatible with settled fresh `/gl`
-  generations whose advisory `gte` values are all `0`, while preserving strict
-  REST participant sets where available.
+- Made GRITLock compatible with trigger `/gl` messages that report `gte=0`:
+  `gls` remains the authoritative live state and `gte` is advisory only. Valid
+  REST participant metadata takes precedence; otherwise the exact bounded set
+  observed in the fresh quiet-settled `/gl` generation defines participants.
+  Empty, incomplete, contradictory, stale, overflowing, timed-out, or unsettled
+  generations continue to fail closed.
+
+This release candidate has not yet been tagged or published.
 
 ## 0.1.0 — 2026-08-04
 
