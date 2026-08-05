@@ -510,6 +510,7 @@ class ApiHubTests(unittest.TestCase):
         client.request = request
         asyncio.run(client.request_device_telemetry("gate", "gate/id"))
         asyncio.run(client.request_device_telemetry("rfid", "42"))
+        asyncio.run(client.request_device_telemetry("trigger", "trigger-1"))
 
         timeout = API.REST_DISCOVERY_TIMEOUT
         self.assertEqual(
@@ -523,6 +524,11 @@ class ApiHubTests(unittest.TestCase):
                 (
                     "POST",
                     "/api/device/mesh-telemetry/refresh/rfid/42",
+                    {"timeout": timeout},
+                ),
+                (
+                    "POST",
+                    "/api/device/mesh-telemetry/refresh/trigger/trigger-1",
                     {"timeout": timeout},
                 ),
             ],

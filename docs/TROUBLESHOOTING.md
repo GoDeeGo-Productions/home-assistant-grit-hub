@@ -70,10 +70,14 @@ paths independently; do not disable TLS verification as a permanent workaround.
 ## Gate is Unknown or does not confirm
 
 Gate state requires authoritative MQTT. Confirm the MQTT Connection diagnostic
-is on and wait for retained or live gate telemetry. REST polling cannot invent a
+is on. After the exact subscription is ready, the integration makes a bounded
+authenticated telemetry request and waits for a fresh gate `/sts` or `/tel`
+response; it does not depend on a retained message. `/req-tel` only shows that a
+request reached the device and cannot set state. REST polling cannot invent a
 gate state. A Home Assistant command succeeds only after a matching observation
 newer than the pre-command sequence; pre-command, contradictory, missing, or
-disconnected evidence fails closed.
+disconnected evidence fails closed. One missing gate response does not erase
+valid state already accepted for another gate.
 
 If physical movement occurred but the service reports no confirmation, stop
 repeating the command and collect only redacted logs. Treat the physical site as
@@ -89,9 +93,14 @@ state rather than inventing one. The default poll is a 30-second fallback.
 
 ## GRITLock is Unknown
 
-GRITLock uses `gls` from exact current-generation `/gl` messages as its only
-displayed-state authority: `gls=1` is Locked and `gls=0` is Unlocked. Exact zero
-is a valid state and is not treated as missing.
+GRITLock uses `gls` from exact current-generation `/gl` messages as its
+ongoing and command-confirmation authority: `gls=1` is Locked and `gls=0` is
+Unlocked. Exact zero is a valid state and is not treated as missing. At startup
+or reconnect, a bounded request for each eligible trigger may also hydrate the
+same displayed state from a complete unanimous set of fresh `/sts` or `/tel`
+responses. That startup set is connection-scoped, cannot confirm a command, and
+fails closed on a missing, invalid, contradictory, stale, or pre-request
+response. `/req-tel` is not state.
 A nonempty, complete, valid REST `gritLockEnabled` set defines required
 participants when available. A complete list with no enabled triggers is not a
 usable participant set. Without usable REST metadata, two firmware patterns are

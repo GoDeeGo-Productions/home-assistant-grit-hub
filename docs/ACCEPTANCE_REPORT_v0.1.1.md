@@ -69,6 +69,28 @@ complete selected-participant disagreement explicitly invalidates authority,
 and disconnect clears MQTT authority. With no valid MQTT state the entity is
 Unknown and unavailable; exact `False` remains a valid unlocked state.
 
+## Post-state-pipeline startup result
+
+Live testing of exact merged main commit `9cd5807` proved that RFID readers
+hydrated successfully while gates and GRITLock remained Unknown after startup.
+A bounded broad-topic diagnostic established the relevant message families
+without retaining installation identifiers or payloads: gate `/sts`, `/mv`,
+`/mv-d`, `/p`, `/req-tel`, and `/tel`, plus trigger `/sts` and `/gl`. The
+defect was not
+MQTT readiness or entity identity. Reconciliation issued targeted REST
+telemetry requests but treated HTTP completion as success, never waited for the
+fresh MQTT response, rejected gate `p` when firmware encoded it as numeric text,
+and ignored trigger startup `gls` outside `/gl` generations.
+
+The corrective startup pass now begins only after exact matching SUBACK
+readiness. It sends bounded authenticated per-target telemetry requests, waits
+for fresh requested `/sts` or `/tel`, and treats `/req-tel` only as a request
+marker. Gate state enters the established per-device MQTT path. A complete
+unanimous trigger startup set hydrates GRITLock authority without entering or
+confirming a `/gl` command generation. RFID remains authoritative from strict
+individual REST detail. Missing or invalid responses fail closed per target and
+do not erase state accepted for another device.
+
 ## Corrective process
 
 The published v0.1.1 release is superseded by the v0.1.2 corrective
@@ -102,14 +124,15 @@ do not make the superseded candidate acceptable for publication.
 
 ## Current corrective automated validation
 
-The v0.1.2 state-pipeline correction was validated without network or
-physical-device access:
+The v0.1.2 state-pipeline and startup-hydration corrections were validated
+without API, MQTT, Home Assistant, or physical-device access:
 
-- 43 focused GRITLock parsing, coordinator, entity, startup, command,
-  Dion-pattern, and Jeff-pattern tests passed.
-- 10 documentation tests passed.
-- 383 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
-- 32 Python files compiled in memory and parsed as AST.
+- 287 focused API, MQTT lifecycle/readiness, runtime ordering, coordinator, gate,
+  RFID, GRITLock, and startup-hydration regression tests passed.
+- 10 dedicated startup-hydration tests passed.
+- 11 documentation tests passed.
+- 394 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
+- 33 Python files compiled in memory and parsed as AST.
 - 3 JSON files and 7 YAML files parsed successfully.
 - `git diff --check` and the changed-file sensitive-value scan passed.
 
@@ -119,8 +142,8 @@ on both live systems.
 
 `v0.1.1` was published on 2026-08-05 and is the latest published release. The
 manifest remains at `0.1.1`; no `v0.1.2` tag, release, or publication is claimed.
-The corrective patch remains blocked until both systems pass live Lock, Unlock,
-confirmation, and immediate-state acceptance.
+The corrective patch remains blocked until both systems pass live startup,
+Lock, Unlock, confirmation, and immediate-state acceptance.
 
 **Acceptance status:** Published v0.1.1 is superseded; v0.1.2 remains blocked
 pending live acceptance on Dion's and Jeff's installations.

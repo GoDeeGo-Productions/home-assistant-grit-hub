@@ -96,6 +96,19 @@ silently replace authoritative newer live state. Background telemetry and
 individual-detail work is bounded by target count, concurrency, timeout, and
 coalescing rules. Disconnect and unload cancel outstanding work and waiters.
 
+Runtime startup reconciliation begins only after the exact successful matching
+SUBACK has made MQTT ready. It sends bounded authenticated
+`POST /api/device/mesh-telemetry/refresh/{type}/{id}` requests for each known
+gate, RFID reader, and eligible GRITLock trigger, with no MQTT publish and no
+device command. Gate and trigger requests wait for a fresh response newer than
+their request boundary. A device may first expose `/req-tel`; that suffix is a
+request marker and is never state. Fresh `/sts` and `/tel` are accepted response
+suffixes. Per-target waits, the overall pass, target count, and request
+concurrency are bounded. One missing response makes the pass incomplete without
+erasing state already accepted for another device. Reconnect opens a new
+connection-scoped pass; disconnect, unload, and failed setup invalidate it and
+wake its waiters.
+
 The coordinator forwards only the fixed platform list: `sensor`,
 `binary_sensor`, `switch`, `cover`, `button`, `lock`, and `number`. Failed setup
 stops the MQTT client and cancels coordinator work before retry. Unload tears
@@ -107,9 +120,9 @@ supported Home Assistant APIs, and reloads once.
 
 | State | Authoritative evidence |
 | --- | --- |
-| Gate | MQTT live state; REST issues commands but does not hydrate or confirm gate state |
+| Gate | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry; REST never supplies gate state |
 | RFID | Strict individual `GET /api/rfid/{id}` boolean `state`; exact MQTT `s`/`st` only invalidates and requests refresh |
-| GRITLock | Settled unanimous MQTT `/gl` generation only; REST selects participants but does not supply displayed state |
+| GRITLock | Fresh unanimous requested trigger `/sts` or `/tel` at startup, then settled MQTT `/gl` generations; REST selects participants but does not supply displayed state |
 | Collector | Strict individual `GET /api/collector/{id}` detail; proven MQTT may supplement displayed state |
 | Collections | Discovery/inventory, except existing generic switch reconciliation where specifically implemented |
 
@@ -119,6 +132,12 @@ REST generation before REST and require newer matching detail. GRITLock commands
 capture and open a new MQTT generation before REST and require its settled
 consensus. The LED writes via REST and requires a newer matching full hub
 refresh. No current displayed value alone confirms a command.
+
+For gates, compact MQTT field `p` is a bounded 0--100 position. Firmware may
+encode it as a number or bounded numeric text. Startup `/sts` or `/tel`, plus
+live `/mv`, `/mv-d`, `/p`, `/s`, and `/st` observations, enter the same
+sanitized per-device state path. `/req-tel` cannot hydrate or alter a gate. Gate
+startup state is never taken from REST.
 
 For GRITLock, exact trigger `/gl` field `gls` is the live lock state:
 `gls=1` is locked (`True`) and `gls=0` is unlocked (`False`). The exact
@@ -154,11 +173,22 @@ Disconnect clears MQTT authority. With no valid authority the state is Unknown
 and its entity is unavailable. REST `gritLockState` is not used as a displayed
 fallback because the inventory response has no proven state-freshness contract.
 
+At startup or reconnect, each eligible trigger is requested only after MQTT is
+ready. Exact binary `gls` from its fresh `/sts` or `/tel` response is collected
+in the connection-scoped startup pass. A complete unanimous participant set may
+hydrate Locked or Unlocked; missing, invalid, contradictory, stale,
+pre-request, or post-cleanup input fails closed. This startup status does not
+create a `/gl` generation, is not stored in command-generation results, and
+cannot confirm Lock or Unlock. Later valid `/gl` generations retain their
+normal live-state and command-confirmation authority.
+
 RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at
 most one active task and one trailing request per reader, tracks at most 64
 readers, and shares a four-request concurrency limit. Gate/RFID reconnect
-telemetry requests are similarly bounded and coalesced. Cancellation propagates;
-no detached work should continue after unload.
+telemetry requests and trigger startup requests are similarly bounded and
+coalesced. RFID continues to hydrate from its strict individual REST detail;
+MQTT payload values do not replace that authority. Cancellation propagates; no
+detached work should continue after unload.
 
 ## Privacy boundary
 

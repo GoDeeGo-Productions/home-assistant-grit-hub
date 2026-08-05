@@ -199,8 +199,8 @@ class GritHubApiClient:
         device_type: str,
         device_id: str,
     ) -> None:
-        """Request current telemetry for one gate or RFID reader."""
-        if device_type not in {"gate", "rfid"}:
+        """Request current telemetry for one supported mesh device."""
+        if device_type not in {"gate", "rfid", "trigger"}:
             raise GritHubApiError("Telemetry device type is invalid")
         if not isinstance(device_id, str):
             raise GritHubApiError("Telemetry device identifier is invalid")

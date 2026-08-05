@@ -11,9 +11,9 @@ Forwarded platforms are `sensor`, `binary_sensor`, `switch`, `cover`, `button`,
 
 | Device or control | Home Assistant platform | Displayed-state authority | Command confirmation |
 | --- | --- | --- | --- |
-| Gate | `cover` | MQTT live state | Newer matching MQTT observation after the pre-command boundary |
+| Gate | `cover` | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry | Newer matching MQTT observation after the pre-command boundary |
 | RFID reader | `lock` | Individual `GET /api/rfid/{id}` strict `state` | Newer matching individual REST generation |
-| GRITLock | `lock` | Settled trigger `/gl` MQTT consensus only | Fresh settled MQTT generation |
+| GRITLock | `lock` | Fresh unanimous requested trigger `/sts` or `/tel` at startup, then settled `/gl` MQTT consensus | Fresh settled `/gl` MQTT generation |
 | Collector | `switch` | Individual collector detail, with proven MQTT supplementation | Newer online, settled matching individual REST detail |
 | Solenoid, latch, powerbank | `switch` | Existing collection/reconciliation implementation | Bounded full coordinator refresh; no collector contract is claimed |
 | System LED brightness | `number` | Sanitized hub REST field | Newer full hub refresh with matching value |
@@ -27,10 +27,15 @@ state.
 ### Gate
 
 One `CoverEntity` with device class `gate` is created per discovered gate.
-Retained MQTT can hydrate startup position/open state, and GRIT-application or
-physical changes update it immediately. Open and close use the bounded REST
+After exact MQTT readiness, a bounded authenticated per-gate telemetry request
+waits for a fresh `/sts` or `/tel` response. Its compact `p` field may be a
+bounded number or numeric text and hydrates position/open state. `/req-tel` is a
+request marker, not gate state. Later `/mv`, `/mv-d`, `/p`, `/s`, and `/st`
+observations continue to update immediately. Open and close use the bounded REST
 state route, capture the MQTT sequence before the command, and require a newer
-matching MQTT observation. There is no unproven REST gate-state fallback.
+matching MQTT observation. There is no unproven REST gate-state fallback and no
+assumption that a retained MQTT status exists. A missing response leaves that
+gate Unknown without erasing valid state accepted for another gate.
 Availability requires a successful REST update, an active MQTT subscription,
 and no explicit offline report. Attributes are restricted to bounded
 allowlisted diagnostics.
@@ -44,6 +49,13 @@ One system-wide `LockEntity` is created. `PUT /api/hub/lockout` receives
 `gritLockEnabled` values may define participants, but REST `gritLockState` is
 not displayed because inventory freshness is unproven. Before MQTT authority
 settles, the entity is Unknown and unavailable.
+
+On startup or reconnect, the integration requests current telemetry for each
+eligible trigger only after exact MQTT readiness. A complete unanimous set of
+fresh requested `/sts` or `/tel` responses with exact binary `gls` hydrates the
+system lock. Missing, invalid, contradictory, stale, or pre-request input leaves
+authority Unknown. Startup status is not a `/gl` generation and cannot confirm
+a Lock or Unlock command.
 
 Exact `trigger/<id>/gl` messages provide live authority. `gls=1` means locked
 (`True`) and `gls=0` means unlocked (`False`); exact `False` is authority, not
