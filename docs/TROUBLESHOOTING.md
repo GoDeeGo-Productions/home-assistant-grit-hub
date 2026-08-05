@@ -89,7 +89,9 @@ state rather than inventing one. The default poll is a 30-second fallback.
 
 ## GRITLock is Unknown
 
-GRITLock uses `gls` from exact current-generation `/gl` messages as live state.
+GRITLock uses `gls` from exact current-generation `/gl` messages as its only
+displayed-state authority: `gls=1` is Locked and `gls=0` is Unlocked. Exact zero
+is a valid state and is not treated as missing.
 A nonempty, complete, valid REST `gritLockEnabled` set defines required
 participants when available. A complete list with no enabled triggers is not a
 usable participant set. Without usable REST metadata, two firmware patterns are
@@ -98,19 +100,20 @@ triggers reporting `gte=1`, while an all-`gte=0` burst uses every fresh observed
 trigger. The choice is not carried into later generations.
 
 Zero observations, participant-limit overflow, missing REST-required messages,
-disagreement within the selected participant set, stale evidence, timeout,
-disconnect, cancellation, generation replacement, or an unsettled generation
-correctly produces Unknown or fails confirmation. Timeout never settles a
-partial generation. After MQTT disconnect GRITLock may fall back to valid
-provisional strict REST trigger fields.
+stale evidence, timeout, cancellation, generation replacement, or an unsettled
+generation fails that generation without erasing an earlier valid MQTT state.
+A complete participant disagreement invalidates authority. Timeout never
+settles a partial generation. After MQTT disconnect, or before the first valid
+settlement, GRITLock is Unknown and unavailable; REST `gritLockState` is not a
+displayed fallback.
 
-PR #25 corrected dual participant selection but did not correct the remaining
-command-confirmation path. Live command delivery and the physical transition
-succeeded while confirmation and immediate entity propagation failed. The
-v0.1.2 correction remains blocked from publication until Lock and Unlock pass on
-both acceptance systems. Until then, if equipment changes but Home Assistant
-reports failed confirmation, do not repeat commands; verify the physical site
-safely and retain only redacted logs.
+PR #25 corrected dual participant selection, and PR #26 corrected command
+generation settlement, but the published build still conflated the latest
+generation result with persistent displayed-state authority. The v0.1.2
+correction remains blocked from publication until Lock, Unlock, confirmation,
+and immediate entity state pass on both acceptance systems. Until then, if
+equipment changes but Home Assistant reports failed confirmation, do not repeat
+commands; verify the physical site safely and retain only redacted logs.
 
 ## Collector command waits or fails
 

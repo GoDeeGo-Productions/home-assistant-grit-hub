@@ -109,7 +109,7 @@ supported Home Assistant APIs, and reloads once.
 | --- | --- |
 | Gate | MQTT live state; REST issues commands but does not hydrate or confirm gate state |
 | RFID | Strict individual `GET /api/rfid/{id}` boolean `state`; exact MQTT `s`/`st` only invalidates and requests refresh |
-| GRITLock | Settled unanimous MQTT `/gl` generation; strict REST trigger consensus is provisional at startup or after disconnect |
+| GRITLock | Settled unanimous MQTT `/gl` generation only; REST selects participants but does not supply displayed state |
 | Collector | Strict individual `GET /api/collector/{id}` detail; proven MQTT may supplement displayed state |
 | Collections | Discovery/inventory, except existing generic switch reconciliation where specifically implemented |
 
@@ -120,8 +120,11 @@ capture and open a new MQTT generation before REST and require its settled
 consensus. The LED writes via REST and requires a newer matching full hub
 refresh. No current displayed value alone confirms a command.
 
-For GRITLock, exact trigger `/gl` field `gls` is the live lock state. A nonempty,
-complete, valid REST `gritLockEnabled` participant set takes precedence and every
+For GRITLock, exact trigger `/gl` field `gls` is the live lock state:
+`gls=1` is locked (`True`) and `gls=0` is unlocked (`False`). The exact
+unlocked value is valid authority and is distinct from missing or inconclusive
+evidence (`None`). A nonempty, complete, valid
+REST `gritLockEnabled` participant set takes precedence and every
 required trigger must appear in the fresh generation; non-required observations
 do not enter consensus. A complete REST list containing no enabled participant
 does not identify a participant set and is therefore unusable for confirmation.
@@ -141,11 +144,15 @@ command waiter, and then wakes waiters. Timeout handling never settles active or
 partial evidence; it can only consume a result already settled naturally at the
 deadline boundary.
 
-All selected observations must agree on `gls`; zero observations,
-participant-limit overflow, a missing REST participant, disagreement, stale or
-mixed-generation evidence, timeout, disconnect, cancellation, generation
-replacement, or an unsettled quiet period remains Unknown or fails
-confirmation.
+All selected observations must agree on `gls`. A valid settled boolean becomes
+the last authoritative MQTT state. Zero observations, participant-limit
+overflow, a missing REST participant, stale or mixed-generation evidence,
+timeout, cancellation, generation replacement, or an unsettled quiet period
+fails that generation but does not erase an earlier valid state. A complete
+selected-participant disagreement explicitly invalidates that earlier state.
+Disconnect clears MQTT authority. With no valid authority the state is Unknown
+and its entity is unavailable. REST `gritLockState` is not used as a displayed
+fallback because the inventory response has no proven state-freshness contract.
 
 RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at
 most one active task and one trailing request per reader, tracks at most 64

@@ -1830,7 +1830,7 @@ class EntityMqttTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.coordinator.gritlock_state_value = value
                 self.assertIs(entity.is_locked, value)
-                self.assertTrue(entity.available)
+                self.assertIs(entity.available, isinstance(value, bool))
 
         self.coordinator.gritlock_state_value = None
         with self.assertRaisesRegex(HomeAssistantError, "confirmed"):

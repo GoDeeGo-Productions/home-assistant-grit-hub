@@ -357,7 +357,9 @@ class GritLiveMqtt:
     def _sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
         sanitized: dict[str, Any] = {}
         for key in _ALLOWED_MQTT_PAYLOAD_KEYS:
-            value = payload.get(key)
+            if key not in payload:
+                continue
+            value = payload[key]
             if isinstance(value, bool) or isinstance(value, int):
                 sanitized[key] = value
             elif isinstance(value, float) and math.isfinite(value):

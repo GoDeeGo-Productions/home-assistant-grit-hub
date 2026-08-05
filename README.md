@@ -8,8 +8,10 @@ the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
 > **Release status:** a `v0.1.2` corrective patch candidate is in development.
-> The `v0.1.1` release was published, passed live verification on Jeff's installation, but regressed Dion's installation and is superseded by the corrective `v0.1.2` release process.
-> [`v0.1.0`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
+> The `v0.1.1` release was published, passed live verification on Jeff's
+> installation, but regressed Dion's installation and is superseded by the
+> corrective `v0.1.2` release process.
+> [`v0.1.1`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
 > remains the latest published release. This project is not a HACS
 > default-catalogue listing.
 
@@ -28,10 +30,10 @@ endorsed by, or supported by GRIT or GRIT Automation.
   post-command MQTT confirmation.
 - One RFID lock entity per reader, using authoritative individual REST state and
   event-driven MQTT invalidation refresh.
-- One system-wide GRITLock entity using bounded trigger MQTT consensus with
-  provisional REST startup state. The corrective dual-mode fallback uses the
-  fresh `gte=1` subset when present, or all fresh observations for an all-zero
-  generation; `gls` remains authoritative.
+- One system-wide GRITLock entity using bounded trigger MQTT consensus. `gls=1`
+  means locked and `gls=0` means unlocked; REST participant metadata selects
+  triggers but never supplies displayed state. Until valid MQTT authority
+  settles, the entity remains Unknown and unavailable.
 - Collector, solenoid, latch, and powerbank switches, with deterministic
   individual-detail confirmation for collectors.
 - Hub connectivity, software, device-count, MQTT, and per-device diagnostics.

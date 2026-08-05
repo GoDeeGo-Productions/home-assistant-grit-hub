@@ -1,7 +1,8 @@
 # v0.1.1 acceptance report
 
-This report records the superseded `v0.1.1` patch release candidate. `v0.1.1`
-was not tagged or published.
+This report records the published `v0.1.1` patch and the live regressions that
+block its corrective `v0.1.2` successor. `v0.1.1` was published on 2026-08-05
+and is superseded by the corrective process below.
 
 ## Scope
 
@@ -49,10 +50,29 @@ was inconsistent with the required natural quiet boundary. The v0.1.2
 correction treats an empty REST set as unusable, replaces stale command
 generations, and permits only natural quiet settlement to publish state.
 
+## Post-PR #26 state-pipeline result
+
+Live testing of the exact merged PR #26 build proved that the bounded command
+generation fix did not resolve the end-to-end state pipeline. REST delivery and
+physical changes worked, but startup and post-command Home Assistant state could
+be wrong or become Unknown.
+
+The corrective audit found no inversion in raw parsing: `gls=1` remained locked
+`True` and `gls=0` remained unlocked `False`. The coordinator instead conflated
+the newest settled generation result with persistent authoritative state, so a
+later incomplete generation could replace a valid `False` or `True` with
+`None`. It also exposed unproven REST `gritLockState` as provisional state.
+
+The v0.1.2 correction keeps the last valid settled MQTT boolean through REST
+polls, failed commands, timeouts, incomplete generations, and overflow. A
+complete selected-participant disagreement explicitly invalidates authority,
+and disconnect clears MQTT authority. With no valid MQTT state the entity is
+Unknown and unavailable; exact `False` remains a valid unlocked state.
+
 ## Corrective process
 
-The v0.1.1 candidate is superseded by the v0.1.2 corrective process. The safe
-per-generation fallback is:
+The published v0.1.1 release is superseded by the v0.1.2 corrective
+process. The safe per-generation fallback is:
 
 1. Use a nonempty, complete, valid REST `gritLockEnabled` participant set when available.
 2. Otherwise, after quiet settlement, use exactly the fresh `gte=1` trigger IDs
@@ -82,27 +102,28 @@ do not make the superseded candidate acceptable for publication.
 
 ## Current corrective automated validation
 
-The v0.1.2 command-confirmation correction was validated without network or
+The v0.1.2 state-pipeline correction was validated without network or
 physical-device access:
 
-- 34 focused GRITLock coordinator and entity tests passed.
+- 43 focused GRITLock parsing, coordinator, entity, startup, command,
+  Dion-pattern, and Jeff-pattern tests passed.
 - 10 documentation tests passed.
-- 373 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
-- 31 tracked Python files compiled in memory and parsed as AST.
+- 383 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
+- 32 Python files compiled in memory and parsed as AST.
 - 3 JSON files and 7 YAML files parsed successfully.
-- `git diff --check` and the added-line sensitive-value scan passed.
+- `git diff --check` and the changed-file sensitive-value scan passed.
 
 These automated results do not replace the required Lock and Unlock acceptance
 on both live systems.
 ## Publication state
 
-`v0.1.0` remains the latest published release. No `v0.1.1` tag, GitHub release,
-or published HACS artifact is claimed by this report. The manifest remains at
-`0.1.1` until the formal v0.1.2 release-preparation process occurs after both
-systems pass.
+`v0.1.1` was published on 2026-08-05 and is the latest published release. The
+manifest remains at `0.1.1`; no `v0.1.2` tag, release, or publication is claimed.
+The corrective patch remains blocked until both systems pass live Lock, Unlock,
+confirmation, and immediate-state acceptance.
 
-**Acceptance status:** Superseded by the v0.1.2 corrective patch process;
-`v0.1.1` is not accepted for publication.
+**Acceptance status:** Published v0.1.1 is superseded; v0.1.2 remains blocked
+pending live acceptance on Dion's and Jeff's installations.
 
 See the [v0.1.1 release checklist](RELEASE_CHECKLIST_v0.1.1.md) and the
 [historical v0.1.0 acceptance report](ACCEPTANCE_REPORT_v0.1.0.md).

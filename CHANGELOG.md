@@ -18,8 +18,14 @@ versioning for public releases.
   all-`gte=0` MQTT fallback. Explicit command generations replace stale active
   evidence, settle only after the natural quiet period, publish the settled
   state immediately, and never use timeout handling to settle partial input.
+- Corrected the end-to-end GRITLock state pipeline. Exact MQTT `gls=0` now
+  remains the authoritative unlocked state, valid state survives later
+  inconclusive generations and REST polling, complete MQTT disagreement clears
+  authority, and an Unknown GRITLock is unavailable. REST `gritLockEnabled`
+  remains participant metadata; REST `gritLockState` is not displayed because
+  its freshness is unproven.
 
-## 0.1.1 — Pending release
+## 0.1.1 — 2026-08-05
 
 ### Fixed
 
@@ -30,8 +36,10 @@ versioning for public releases.
   Empty, incomplete, contradictory, stale, overflowing, timed-out, or unsettled
   generations continue to fail closed.
 
-This candidate was superseded by the corrective v0.1.2 process and was not
-tagged or published.
+Released as [GRIT Hub for Home Assistant v0.1.1](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
+on 2026-08-05. The release passed the all-`gte=0` installation but exposed a
+mixed-installation regression and is superseded by the corrective v0.1.2
+process.
 
 ## 0.1.0 — 2026-08-04
 

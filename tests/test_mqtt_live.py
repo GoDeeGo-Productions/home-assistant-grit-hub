@@ -767,6 +767,24 @@ class GritLiveMqttTests(unittest.TestCase):
         )
         client.stop()
 
+    def test_gritlock_zero_values_are_preserved_as_present(self) -> None:
+        received: list[tuple[Any, ...]] = []
+        fake = FakeClient()
+        factory = FakeClientFactory([fake])
+        client = self._new_client(lambda *args: received.append(args))
+        with self._paho_patch(factory):
+            self.assertTrue(client.start())
+        self._connect_and_acknowledge(fake)
+        fake.on_message(
+            fake,
+            None,
+            FakeMessage(
+                b'{"gls": 0, "gte": 0}',
+                f"grit/{FABRICATED_HUB_ID}/trigger/{FABRICATED_DEVICE_ID}/gl",
+            ),
+        )
+        self.assertEqual(received[-1][-1], {"gls": 0, "gte": 0})
+        client.stop()
     def test_tls_disabled_invokes_no_tls_methods(self) -> None:
         factory = FakeClientFactory()
         client = self._new_client(use_tls=False)
