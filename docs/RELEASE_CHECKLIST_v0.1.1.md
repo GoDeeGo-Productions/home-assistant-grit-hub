@@ -14,6 +14,9 @@ published on 2026-08-05; v0.1.2 is not tagged or published.
 - [x] PR #26 corrected command-generation settlement
 - [x] Exact merged PR #26 build reproduced wrong startup and post-command state on Dion's installation
 - [x] End-to-end state-pipeline cause identified and corrected offline
+- [x] Exact merged `9cd5807` build reproduced Unknown gate and GRITLock startup while RFID hydrated
+- [x] Startup response families and ordering audited without retaining installation data
+- [x] Bounded post-SUBACK request/response hydration implemented and tested offline
 - [ ] Corrective v0.1.2 Lock, Unlock, confirmation, and immediate entity state pass on both installations
 
 ## Corrective validation
@@ -29,13 +32,17 @@ published on 2026-08-05; v0.1.2 is not tagged or published.
 ## Required v0.1.2 live acceptance
 
 - [ ] Clean corrected build installed on Jeff's system
+- [ ] Jeff gate startup state hydrates from fresh requested MQTT status
+- [ ] Jeff GRITLock startup state hydrates from fresh requested trigger status
 - [ ] Jeff GRITLock Lock succeeds with all-`gte=0`, `gls=1`
 - [ ] Jeff GRITLock Unlock succeeds with all-`gte=0`, `gls=0`
 - [ ] Clean corrected build installed on Dion's system
+- [ ] Dion gate startup state hydrates for every responding gate
 - [ ] Dion startup all-`gte=0`, `gls=0` displays Unlocked and offers Lock
 - [ ] Dion mixed `gte=1`, `gls=1` generation displays Locked and offers Unlock
 - [ ] Dion fresh all-`gte=0`, `gls=0` Unlock confirms and displays Unlocked
 - [ ] No false confirmation toast for Lock or Unlock
+- [ ] Partial or missing startup responses leave only affected devices Unknown
 - [ ] No regression on gate, RFID, collector, LED, config flow, or MQTT lifecycle
 
 ## Publication history and next release

@@ -26,8 +26,8 @@ endorsed by, or supported by GRIT or GRIT Automation.
 
 ## Features
 
-- Gate covers with retained startup hydration, immediate MQTT updates, and
-  post-command MQTT confirmation.
+- Gate covers with bounded request/response startup hydration, immediate MQTT
+  updates, and post-command MQTT confirmation.
 - One RFID lock entity per reader, using authoritative individual REST state and
   event-driven MQTT invalidation refresh.
 - One system-wide GRITLock entity using bounded trigger MQTT consensus. `gls=1`
@@ -56,6 +56,15 @@ Home Assistant's MQTT integration is not required. HACS installs only this
 custom integration; it does not provide or configure a broker. See
 [Architecture](docs/ARCHITECTURE.md) for the source-of-truth and confirmation
 rules.
+
+After the exact runtime subscription is ready, the integration requests current
+telemetry for each bounded known gate and eligible GRITLock trigger through the
+authenticated REST API. Fresh MQTT `/sts` or `/tel` responses hydrate startup
+state without assuming the broker has retained messages. A gate's bounded `p`
+position may be numeric or numeric text; `/req-tel` is never treated as state.
+GRITLock startup status is kept separate from `/gl` command-confirmation
+generations. The integration does not publish MQTT or operate equipment during
+startup hydration.
 
 ## Entity summary
 
@@ -158,8 +167,10 @@ overrides. The API token and MQTT password remain secret fields.
 - One config entry represents one API and MQTT hub identity; multi-hub behavior
   has not been broadly validated.
 - Dynamic device entity addition and removal requires an integration reload.
-- Gate state has no unproven REST fallback. RFID state comes from individual
-  REST detail, not collection state or MQTT payload values.
+- Gate state has no unproven REST fallback. Startup waits for a fresh requested
+  MQTT status response, but a missing device does not erase state already
+  obtained for another device. RFID state comes from individual REST detail,
+  not collection state or MQTT payload values.
 - Collector-grade transition confirmation does not apply to solenoid, latch, or
   powerbank switches.
 - The imported/generated endpoint catalogue remains broad and contains routes

@@ -147,6 +147,8 @@ class FakeApi:
         self.telemetry_active = 0
         self.telemetry_max_active = 0
         self.telemetry_cancelled = 0
+        self.telemetry_hook = None
+        self.auto_telemetry = True
 
     async def health_check(self):
         return deepcopy(self.health)
@@ -260,6 +262,8 @@ class FakeApi:
                 raise coordinator_module.GritHubApiError(
                     "fabricated telemetry request failure"
                 )
+            if self.telemetry_hook is not None:
+                self.telemetry_hook(device_type, str(device_id))
         except asyncio.CancelledError:
             self.telemetry_cancelled += 1
             raise
@@ -1863,6 +1867,38 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             "health": None,
             "errors": {},
         }
+
+        if api.auto_telemetry and api.telemetry_hook is None:
+            def emit_startup_status(device_type, device_id):
+                if instance._startup_hydration is None:
+                    return
+                if device_type == "gate":
+                    position = 0
+                    for gate in instance.data["devices"].get("gate", []):
+                        if device_id not in coordinator_module._device_identifiers(
+                            gate
+                        ):
+                            continue
+                        prior = gate.get(coordinator_module.MQTT_STATE_KEY, {})
+                        if isinstance(prior.get("position"), (int, float)):
+                            position = prior["position"]
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "gate",
+                        device_id,
+                        "sts",
+                        {"p": str(position), "sts": 1},
+                    )
+                elif device_type == "trigger":
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        device_id,
+                        "sts",
+                        {"gls": 0, "sts": 1},
+                    )
+
+            api.telemetry_hook = emit_startup_status
         return instance
 
     async def wait_until_idle(self, instance):

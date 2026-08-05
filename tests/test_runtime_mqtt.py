@@ -148,6 +148,7 @@ class FakeCoordinator:
 
     def start_state_reconciliation(self) -> bool:
         self.reconciliation_starts += 1
+        self.hass.scenario.events.append("reconciliation_start")
         return True
 
     async def async_stop_state_reconciliation(self) -> None:
@@ -512,7 +513,7 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
         coordinator = runtime.coordinator
 
         self.assertEqual(
-            self.scenario.events[:7],
+            self.scenario.events[:8],
             [
                 "api_construct",
                 "coordinator_construct",
@@ -520,6 +521,7 @@ class RuntimeMqttTests(unittest.IsolatedAsyncioTestCase):
                 "mqtt_construct",
                 "mqtt_start",
                 "mqtt_state_connected",
+                "reconciliation_start",
                 "forward_platforms",
             ],
         )

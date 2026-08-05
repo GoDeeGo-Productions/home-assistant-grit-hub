@@ -61,12 +61,16 @@ _LOCAL_RECEIVE_SEQUENCE_KEY = "_receive_sequence"
 _FIELD_OBSERVATIONS_KEY = "_field_observations"
 
 _RECONCILIATION_DEVICE_TYPES = ("gate", "rfid", "collector")
+_STARTUP_TELEMETRY_DEVICE_TYPES = ("gate", "rfid", "trigger")
 _COMMAND_STATE_FIELDS = {"gate": "open"}
 _LIVE_STATE_FIELDS = {"gate": ("position", "open")}
+_GATE_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
+_GRITLOCK_STARTUP_RESPONSE_TYPES = frozenset({"sts", "tel"})
 _RECONCILIATION_CONCURRENCY = 4
 _RECONCILIATION_MAX_TARGETS = 64
 _RECONCILIATION_MAX_PASSES = 2
 _RECONCILIATION_PASS_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
+_RECONCILIATION_RESPONSE_TIMEOUT = REST_DISCOVERY_TIMEOUT
 _MAX_RFID_STATE_TARGETS = 64
 _RFID_STATE_CONCURRENCY = 4
 _RFID_STATE_REFRESH_TIMEOUT = REST_DISCOVERY_TIMEOUT * 3
@@ -118,6 +122,18 @@ class _SettledGritlockGeneration:
     participants: frozenset[str]
 
 
+@dataclass(slots=True)
+class _StartupHydration:
+    """One connection-scoped, request-bounded startup hydration pass."""
+
+    connection_generation: int
+    after_sequence: int
+    expected_triggers: frozenset[str]
+    requested_targets: set[tuple[str, str]]
+    observed_targets: set[tuple[str, str]]
+    trigger_states: dict[str, bool]
+    response_events: dict[tuple[str, str], asyncio.Event]
+
 
 def _bounded_text(value: Any, maximum: int) -> str | None:
     if not isinstance(value, str):
@@ -157,6 +173,28 @@ def _strict_binary_bool(value: Any) -> bool | object:
     if isinstance(value, bool):
         return value
     return bool(value) if isinstance(value, int) and value in (0, 1) else _INVALID
+
+
+def _gate_position(value: Any) -> int | float | object:
+    """Accept bounded numeric gate position, including firmware text form."""
+    if isinstance(value, str):
+        normalized = value.strip()
+        if (
+            not normalized
+            or len(normalized) > 16
+            or not normalized.isprintable()
+        ):
+            return _INVALID
+        try:
+            value = float(normalized)
+        except ValueError:
+            return _INVALID
+    bounded = _bounded_number(value, 0, 100)
+    if bounded is _INVALID:
+        return _INVALID
+    if isinstance(bounded, float) and bounded.is_integer():
+        return int(bounded)
+    return bounded
 
 
 def _bounded_number(value: Any, minimum: float, maximum: float) -> int | float | object:
@@ -424,10 +462,14 @@ def _payload_state(
     updates: dict[str, Any] = {}
     root_message_type = message_type.split("/", 1)[0].lower()
 
-    if device_type == "gate":
-        position = _first_valid(
-            payload, ("p", "position"), lambda value: _bounded_number(value, 0, 100)
-        )
+    if device_type == "gate" and root_message_type != "req-tel":
+        position = _first_valid(payload, ("p",), _gate_position)
+        if position is _INVALID:
+            position = _first_valid(
+                payload,
+                ("position",),
+                lambda value: _bounded_number(value, 0, 100),
+            )
         if position is not _INVALID:
             updates["position"] = position
 
@@ -514,6 +556,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._reconciliation_task: asyncio.Task[None] | None = None
         self._reconcile_again = False
         self._reconciliation_enabled = True
+        self._startup_hydration: _StartupHydration | None = None
         self._telemetry_request_tasks: dict[
             tuple[str, str], asyncio.Task[None]
         ] = {}
@@ -1739,6 +1782,101 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         generation.rest_participants_usable = usable
         self._wake_mqtt_state_waiters()
 
+    def _clear_startup_hydration(
+        self,
+        session: _StartupHydration | None = None,
+    ) -> None:
+        """Invalidate one startup pass and release all bounded waiters."""
+        current = self._startup_hydration
+        if current is None or (session is not None and current is not session):
+            return
+        self._startup_hydration = None
+        for event in current.response_events.values():
+            event.set()
+
+    def _record_startup_hydration(
+        self,
+        device_type: str,
+        device_id: str,
+        root_message_type: str,
+        payload: dict[str, Any],
+        updates: dict[str, Any] | None,
+        receive_sequence: int,
+    ) -> tuple[bool, bool]:
+        """Return whether a requested response and state change were accepted."""
+        session = self._startup_hydration
+        target = (device_type, device_id)
+        if (
+            session is None
+            or session.connection_generation
+            != self._mqtt_connection_generation
+            or receive_sequence <= session.after_sequence
+            or target not in session.requested_targets
+        ):
+            return False, False
+
+        state_changed = False
+        if device_type == "gate":
+            if (
+                root_message_type not in _GATE_STARTUP_RESPONSE_TYPES
+                or not isinstance(updates, dict)
+                or not isinstance(updates.get("open"), bool)
+            ):
+                return False, False
+        elif device_type == "trigger":
+            if (
+                root_message_type not in _GRITLOCK_STARTUP_RESPONSE_TYPES
+                or device_id not in session.expected_triggers
+            ):
+                return False, False
+            locked = _strict_binary_bool(payload.get("gls", _INVALID))
+            if locked is _INVALID:
+                return False, False
+            session.trigger_states[device_id] = locked
+            if session.expected_triggers.issubset(session.trigger_states):
+                states = {
+                    session.trigger_states[trigger_id]
+                    for trigger_id in session.expected_triggers
+                }
+                authoritative = next(iter(states)) if len(states) == 1 else None
+                if self._gritlock_authoritative_state is not authoritative:
+                    self._gritlock_authoritative_state = authoritative
+                    state_changed = True
+        else:
+            return False, False
+
+        session.observed_targets.add(target)
+        event = session.response_events.get(target)
+        if event is not None:
+            event.set()
+        return True, state_changed
+
+    async def _async_wait_startup_response(
+        self,
+        session: _StartupHydration,
+        target: tuple[str, str],
+    ) -> bool:
+        """Wait for one exact response without retaining its raw payload."""
+        if target in session.observed_targets:
+            return True
+        event = session.response_events.get(target)
+        if event is None:
+            return False
+        try:
+            await asyncio.wait_for(
+                event.wait(),
+                timeout=_RECONCILIATION_RESPONSE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return False
+        return (
+            self._startup_hydration is session
+            and self._reconciliation_enabled
+            and self._mqtt_connected
+            and self._mqtt_connection_generation
+            == session.connection_generation
+            and target in session.observed_targets
+        )
 
     def set_mqtt_connected(self, connected: bool) -> bool:
         """Update broker state on the event loop and notify once per change."""
@@ -1763,7 +1901,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 waiter.set_result(None)
 
     def start_state_reconciliation(self) -> bool:
-        """Start or coalesce one gate/RFID telemetry reconciliation pass."""
+        """Start or coalesce one gate/RFID/trigger reconciliation pass."""
         if not self._reconciliation_enabled or not self._mqtt_connected:
             return False
         task = self._reconciliation_task
@@ -1779,6 +1917,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def cancel_state_reconciliation(self) -> None:
         """Cancel any in-flight telemetry reconciliation pass."""
         self._reconcile_again = False
+        self._clear_startup_hydration()
         task = self._reconciliation_task
         if task is not None and not task.done():
             task.cancel()
@@ -1820,6 +1959,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_reconciliation_loop(self) -> None:
         current_task = asyncio.current_task()
+        ran_pass = False
+        reconciled = True
         try:
             for _ in range(_RECONCILIATION_MAX_PASSES):
                 if (
@@ -1827,14 +1968,15 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     or not self._mqtt_connected
                 ):
                     break
+                ran_pass = True
                 self._reconcile_again = False
                 reconciled = await self._async_request_device_telemetry()
-                if not reconciled:
-                    _LOGGER.warning(
-                        "GRIT device state reconciliation was incomplete"
-                    )
                 if not self._reconcile_again:
                     break
+            if ran_pass and not reconciled:
+                _LOGGER.warning(
+                    "GRIT device state reconciliation was incomplete"
+                )
             self._reconcile_again = False
         except asyncio.CancelledError:
             raise
@@ -1853,14 +1995,16 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self.start_state_reconciliation()
 
     async def _async_request_device_telemetry(self) -> bool:
-        """Request current telemetry for every known gate and RFID reader."""
+        """Request and await fresh startup state for supported devices."""
         data = self.data if isinstance(self.data, dict) else {}
         devices = data.get("devices")
         if not isinstance(devices, dict):
             return False
 
         targets: list[tuple[str, str]] = []
-        for device_type in _RECONCILIATION_DEVICE_TYPES:
+        inventory_incomplete = False
+        expected_triggers = frozenset[str]()
+        for device_type in _STARTUP_TELEMETRY_DEVICE_TYPES:
             collection = devices.get(device_type)
             if not isinstance(collection, list):
                 continue
@@ -1872,30 +2016,80 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for identifier in identifiers
                 if identifier is not None
             )
-            targets.extend(
-                (device_type, identifier)
+            inventory_incomplete = inventory_incomplete or any(
+                identifier is None for identifier in identifiers
+            ) or any(count != 1 for count in counts.values())
+            unique = [
+                identifier
                 for identifier in identifiers
                 if identifier is not None and counts[identifier] == 1
-            )
+            ]
+            if device_type == "trigger":
+                rest_participants, rest_usable = (
+                    self._rest_gritlock_participants(devices)
+                )
+                expected_triggers = (
+                    rest_participants
+                    if rest_usable
+                    else frozenset(unique)
+                )
+                unique = [
+                    identifier
+                    for identifier in unique
+                    if identifier in expected_triggers
+                ]
+            targets.extend((device_type, identifier) for identifier in unique)
 
         truncated = len(targets) > _RECONCILIATION_MAX_TARGETS
         targets = targets[:_RECONCILIATION_MAX_TARGETS]
+        response_targets = {
+            target
+            for target in targets
+            if target[0] in {"gate", "trigger"}
+        }
+        session = _StartupHydration(
+            connection_generation=self._mqtt_connection_generation,
+            after_sequence=self._mqtt_receive_sequence,
+            expected_triggers=expected_triggers,
+            requested_targets=set(),
+            observed_targets=set(),
+            trigger_states={},
+            response_events={
+                target: asyncio.Event() for target in response_targets
+            },
+        )
+        self._clear_startup_hydration()
+        self._startup_hydration = session
         semaphore = asyncio.Semaphore(_RECONCILIATION_CONCURRENCY)
 
         async def request_one(
             device_type: str,
             device_id: str,
         ) -> bool:
-            async with semaphore:
-                try:
+            target = (device_type, device_id)
+            try:
+                async with semaphore:
+                    if (
+                        self._startup_hydration is not session
+                        or not self._reconciliation_enabled
+                        or not self._mqtt_connected
+                        or self._mqtt_connection_generation
+                        != session.connection_generation
+                    ):
+                        return False
+                    session.requested_targets.add(target)
                     await self._async_request_target_telemetry(
                         device_type,
                         device_id,
                         cancel_if_unshared=True,
                     )
-                except Exception:
-                    return False
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return False
+            if device_type == "rfid":
                 return True
+            return await self._async_wait_startup_response(session, target)
 
         try:
             results = await asyncio.wait_for(
@@ -1909,7 +2103,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except asyncio.TimeoutError:
             return False
-        return not truncated and all(results)
+        finally:
+            self._clear_startup_hydration(session)
+        return not truncated and not inventory_incomplete and all(results)
 
     async def _async_request_target_telemetry(
         self,
@@ -2336,6 +2532,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return False
 
+        root_message_type = normalized_message_type.split("/", 1)[0].lower()
         rfid_event_scheduled = (
             device_type == "rfid"
             and normalized_message_type in {"s", "st"}
@@ -2363,7 +2560,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return False
 
-        if device_type == "trigger" and normalized_message_type.lower() == "gl":
+        if device_type == "trigger" and root_message_type == "gl":
             return self._apply_gritlock_observation(
                 normalized_device_id, payload
             )
@@ -2372,6 +2569,25 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_type, normalized_message_type, payload
         )
         if updates is None:
+            if (
+                device_type == "trigger"
+                and root_message_type in _GRITLOCK_STARTUP_RESPONSE_TYPES
+            ):
+                receive_sequence = self._mqtt_receive_sequence + 1
+                accepted, state_changed = self._record_startup_hydration(
+                    device_type,
+                    normalized_device_id,
+                    root_message_type,
+                    payload,
+                    None,
+                    receive_sequence,
+                )
+                if accepted:
+                    self._mqtt_receive_sequence = receive_sequence
+                    if state_changed:
+                        self.async_update_listeners()
+                    self._wake_mqtt_state_waiters()
+                    return True
             if rfid_event_scheduled:
                 return True
             _LOGGER.debug(
@@ -2450,6 +2666,15 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for field in updates:
             next_observations[field] = self._mqtt_receive_sequence
         next_state[_FIELD_OBSERVATIONS_KEY] = next_observations
+
+        self._record_startup_hydration(
+            device_type,
+            normalized_device_id,
+            root_message_type,
+            payload,
+            updates,
+            self._mqtt_receive_sequence,
+        )
 
         next_ordering = {
             category: dict(marker)

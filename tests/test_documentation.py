@@ -105,6 +105,10 @@ class DocumentationTests(unittest.TestCase):
             "Corrected the end-to-end GRITLock state pipeline",
             changelog,
         )
+        self.assertIn(
+            "Corrected gate and GRITLock startup hydration",
+            changelog,
+        )
 
         acceptance_flat = " ".join(acceptance_v011.split())
         self.assertIn(
@@ -121,6 +125,10 @@ class DocumentationTests(unittest.TestCase):
             "post-command state on Dion's installation",
             "- [x] End-to-end state-pipeline cause identified and corrected "
             "offline",
+            "- [x] Exact merged `9cd5807` build reproduced Unknown gate and "
+            "GRITLock startup while RFID hydrated",
+            "- [x] Bounded post-SUBACK request/response hydration implemented "
+            "and tested offline",
         ):
             self.assertIn(evidence_item, checklist_v011)
         for pending_item in (
@@ -132,6 +140,9 @@ class DocumentationTests(unittest.TestCase):
             "- [ ] Jeff GRITLock Unlock succeeds with all-`gte=0`, `gls=0`",
             "- [ ] Dion startup all-`gte=0`, `gls=0` displays Unlocked and "
             "offers Lock",
+            "- [ ] Jeff gate startup state hydrates from fresh requested MQTT "
+            "status",
+            "- [ ] Dion gate startup state hydrates for every responding gate",
             "- [ ] Tag `v0.1.2` created",
             "- [ ] GitHub release v0.1.2 created",
             "- [ ] Final HACS install completed from published `v0.1.2`",
@@ -316,11 +327,35 @@ class DocumentationTests(unittest.TestCase):
         for expected in (
             "Gate | MQTT live state",
             "RFID | Strict individual `GET /api/rfid/{id}`",
-            "GRITLock | Settled unanimous MQTT `/gl` generation",
+            "GRITLock | Fresh unanimous requested trigger `/sts`",
             "Collector | Strict individual `GET /api/collector/{id}` detail",
             "Production code contains no MQTT publish path.",
+            "`POST /api/device/mesh-telemetry/refresh/{type}/{id}`",
+            "`/req-tel` cannot hydrate or alter a gate",
+            "cannot confirm Lock or Unlock",
         ):
             self.assertIn(expected, architecture)
+
+    def test_startup_hydration_sources_and_boundaries_are_documented(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        entities = (ROOT / "docs/ENTITIES.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs/TROUBLESHOOTING.md").read_text(
+            encoding="utf-8"
+        )
+        for expected in (
+            "exact runtime subscription is ready",
+            "Fresh MQTT `/sts` or `/tel` responses hydrate startup",
+            "does not publish MQTT or operate equipment",
+        ):
+            self.assertIn(expected, readme)
+        for expected in (
+            "assumption that a retained MQTT status exists",
+            "Startup status is not a `/gl` generation",
+            "Missing, invalid, contradictory, stale, or pre-request input",
+        ):
+            self.assertIn(expected, entities)
+        self.assertIn("does not depend on a retained message", troubleshooting)
+        self.assertIn("`/req-tel` is not state", troubleshooting)
 
     def test_gritlock_dual_participant_modes_are_documented(self) -> None:
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(
