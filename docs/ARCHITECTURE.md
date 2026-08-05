@@ -120,22 +120,32 @@ capture and open a new MQTT generation before REST and require its settled
 consensus. The LED writes via REST and requires a newer matching full hub
 refresh. No current displayed value alone confirms a command.
 
-For GRITLock, exact trigger `/gl` field `gls` is the live lock state. A complete,
-valid REST `gritLockEnabled` participant set takes precedence and every required
-trigger must appear in the fresh generation; non-required observations do not
-enter consensus. When that REST metadata is absent or unusable, participant
-selection is computed independently for each fresh quiet-settled generation. If
-one or more observations have `gte=1`, exactly those trigger IDs participate and
-`gte=0` observations do not enter consensus. If no observation has `gte=1`, all
-unique triggers observed in that generation participate, supporting all-zero
-firmware behavior. MQTT-derived participants are not persisted into later
-generations.
+For GRITLock, exact trigger `/gl` field `gls` is the live lock state. A nonempty,
+complete, valid REST `gritLockEnabled` participant set takes precedence and every
+required trigger must appear in the fresh generation; non-required observations
+do not enter consensus. A complete REST list containing no enabled participant
+does not identify a participant set and is therefore unusable for confirmation.
+When REST metadata is absent or unusable, participant selection is computed
+independently for each fresh quiet-settled generation. If one or more
+observations have `gte=1`, exactly those trigger IDs participate and `gte=0`
+observations do not enter consensus. If no observation has `gte=1`, all unique
+triggers observed in that generation participate, supporting all-zero firmware
+behavior. MQTT-derived participants are not persisted into later generations.
+
+A command creates a new generation at its pre-command receive boundary and
+invalidates any incomplete active generation, waking the old waiter to fail
+closed. The first accepted observation newer than that boundary enters only the
+new generation. Natural quiet settlement publishes the authoritative state,
+notifies coordinator listeners immediately, stores the bounded result for the
+command waiter, and then wakes waiters. Timeout handling never settles active or
+partial evidence; it can only consume a result already settled naturally at the
+deadline boundary.
 
 All selected observations must agree on `gls`; zero observations,
 participant-limit overflow, a missing REST participant, disagreement, stale or
-mixed-generation evidence, timeout, disconnect, cancellation, or an unsettled
-quiet period remains Unknown or fails confirmation. No timeout force-settles a
-partial generation.
+mixed-generation evidence, timeout, disconnect, cancellation, generation
+replacement, or an unsettled quiet period remains Unknown or fails
+confirmation.
 
 RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at
 most one active task and one trailing request per reader, tracks at most 64

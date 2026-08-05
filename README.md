@@ -8,7 +8,7 @@ the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
 > **Release status:** a `v0.1.2` corrective patch candidate is in development.
-> The `v0.1.1` release candidate is superseded and was not published.
+> The `v0.1.1` release was published, passed live verification on Jeff's installation, but regressed Dion's installation and is superseded by the corrective `v0.1.2` release process.
 > [`v0.1.0`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
 > remains the latest published release. This project is not a HACS
 > default-catalogue listing.

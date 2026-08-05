@@ -45,16 +45,23 @@ authority settles, strict `gritLockEnabled` and `gritLockState` values from
 trigger inventory may provide provisional startup state.
 
 Exact `trigger/<id>/gl` messages provide live authority, and `gls` is the live
-lock state. A complete, valid REST `gritLockEnabled` set defines the required
-participants when available. Otherwise each fresh quiet-settled generation uses
-exactly its `gte=1` trigger subset when at least one exists; an all-`gte=0`
-generation uses all of its fresh observed triggers. MQTT-derived participants
-are not carried into another generation. Every selected observation must agree
-on `gls`; zero observations, participant-limit overflow, missing REST
-participants, disagreement, stale evidence, timeout, or an unsettled generation
-produces Unknown or fails confirmation. A command is confirmed only by its newer
-fresh settled generation. MQTT disconnect discards incomplete generations and
-may return to valid provisional REST state.
+lock state. A nonempty, complete, valid REST `gritLockEnabled` set defines the
+required participants when available; an empty set does not identify
+participants and uses MQTT fallback. Otherwise each fresh quiet-settled
+generation uses exactly its `gte=1` trigger subset when at least one exists; an
+all-`gte=0` generation uses all of its fresh observed triggers. MQTT-derived
+participants are not carried into another generation. Every selected
+observation must agree on `gls`; zero observations, participant-limit overflow,
+missing REST participants, disagreement, stale evidence, timeout, generation
+replacement, or an unsettled generation produces Unknown or fails
+confirmation.
+
+A command opens a clean generation at the pre-command MQTT boundary and is
+confirmed only by its newer naturally settled generation. HTTP success and the
+currently displayed state are never enough, including for a no-op command. A
+valid settled result immediately notifies the entity, so Locked exposes Unlock
+and Unlocked exposes Lock without waiting for REST polling. MQTT disconnect
+discards incomplete generations and may return to valid provisional REST state.
 
 ### RFID reader
 

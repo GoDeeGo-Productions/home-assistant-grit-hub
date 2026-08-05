@@ -127,10 +127,15 @@ class DocumentationTests(unittest.TestCase):
             "- [x] All-`gte=0` Lock and Unlock passed on Jeff's installation",
             "- [x] Mixed-`gte` participant regression reproduced on Dion's "
             "installation",
+            "- [x] PR #25 corrected dual-mode participant selection",
+            "- [x] Post-PR #25 command delivery and physical transition "
+            "succeeded on Dion's installation",
+            "- [x] Post-PR #25 confirmation and immediate entity propagation "
+            "failed on Dion's installation",
             "- [x] v0.1.1 candidate superseded by the v0.1.2 corrective "
             "process",
-            "- [ ] Corrective v0.1.2 Lock and Unlock pass on both "
-            "installations",
+            "- [ ] Corrective v0.1.2 Lock, Unlock, confirmation, and "
+            "immediate entity state pass on both installations",
         ):
             self.assertIn(supersession_item, checklist_v011)
         for pending_item in (
@@ -348,13 +353,18 @@ class DocumentationTests(unittest.TestCase):
         )
         self.assertIn("`gls` is the live lock state", architecture)
         self.assertIn("REST `gritLockEnabled` participant set", architecture)
-        self.assertIn("one or more observations have `gte=1`", architecture)
+        self.assertIn(
+            "A complete REST list containing no enabled participant",
+            architecture,
+        )
+        self.assertIn("observations have `gte=1`", architecture)
+        self.assertIn("Timeout handling never settles active or", architecture)
         self.assertIn(
             "MQTT-derived participants are not persisted",
             architecture,
         )
-        self.assertIn("an all-`gte=0`", entities)
-        self.assertIn("two firmware patterns are supported", troubleshooting)
+        self.assertIn("all-`gte=0` generation", entities)
+        self.assertIn("two firmware patterns are", troubleshooting)
         self.assertIn("mixed burst uses exactly", troubleshooting)
 
     def test_mqtt_topic_scopes_and_safe_diagnostic_command_are_accurate(self) -> None:
