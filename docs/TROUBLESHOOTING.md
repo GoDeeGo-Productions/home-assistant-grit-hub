@@ -91,11 +91,16 @@ state rather than inventing one. The default poll is a 30-second fallback.
 
 GRITLock uses `gls` from exact current-generation `/gl` messages as live state.
 A complete valid REST `gritLockEnabled` set defines required participants when
-available; otherwise the fresh bounded quiet-settled observed burst defines the
-participant set. `gte=0` is compatible and is not a universal exclusion rule.
-Zero observations, participant-limit overflow, missing required messages,
-disagreement, or an unsettled generation correctly produces Unknown. After MQTT disconnect GRITLock may fall
-back to valid provisional strict REST trigger fields.
+available. Without usable REST metadata, two firmware patterns are supported per
+fresh quiet-settled generation: a mixed burst uses exactly the triggers reporting
+`gte=1`, while an all-`gte=0` burst uses every fresh observed trigger. The choice
+is not carried into later generations.
+
+Zero observations, participant-limit overflow, missing REST-required messages,
+disagreement within the selected participant set, stale evidence, timeout,
+disconnect, cancellation, or an unsettled generation correctly produces Unknown
+or fails confirmation. After MQTT disconnect GRITLock may fall back to valid
+provisional strict REST trigger fields.
 
 ## Collector command waits or fails
 

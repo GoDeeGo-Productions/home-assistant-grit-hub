@@ -1,8 +1,15 @@
 # v0.1.1 patch-release checklist
 
-This checklist tracks the GRITLock `gte=0` compatibility patch. Items remain
-unchecked until their release evidence is reviewed; `v0.1.1` is not yet tagged
-or published.
+This checklist records the superseded GRITLock `gte=0` compatibility candidate.
+`v0.1.1` was not tagged or published; its remaining publication items stay
+unchecked and must not be completed.
+
+## Supersession evidence
+
+- [x] All-`gte=0` Lock and Unlock passed on Jeff's installation
+- [x] Mixed-`gte` participant regression reproduced on Dion's installation
+- [x] v0.1.1 candidate superseded by the v0.1.2 corrective process
+- [ ] Corrective v0.1.2 Lock and Unlock pass on both installations
 
 ## Candidate validation
 

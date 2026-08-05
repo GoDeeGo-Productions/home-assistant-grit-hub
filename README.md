@@ -7,8 +7,9 @@ GRIT Hub gates, RFID readers, GRITLock, collectors, and hub controls. It combine
 the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
-> **Release status:** `v0.1.1` is the current release candidate and has not yet
-> been tagged or published. [`v0.1.0`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
+> **Release status:** a `v0.1.2` corrective patch candidate is in development.
+> The `v0.1.1` release candidate is superseded and was not published.
+> [`v0.1.0`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
 > remains the latest published release. This project is not a HACS
 > default-catalogue listing.
 
@@ -28,8 +29,9 @@ endorsed by, or supported by GRIT or GRIT Automation.
 - One RFID lock entity per reader, using authoritative individual REST state and
   event-driven MQTT invalidation refresh.
 - One system-wide GRITLock entity using bounded trigger MQTT consensus with
-  provisional REST startup state. The v0.1.1 release candidate treats `gls` as
-  authoritative and `gte` as advisory for compatibility with `gte=0` hubs.
+  provisional REST startup state. The corrective dual-mode fallback uses the
+  fresh `gte=1` subset when present, or all fresh observations for an all-zero
+  generation; `gls` remains authoritative.
 - Collector, solenoid, latch, and powerbank switches, with deterministic
   individual-detail confirmation for collectors.
 - Hub connectivity, software, device-count, MQTT, and per-device diagnostics.
@@ -135,8 +137,8 @@ overrides. The API token and MQTT password remain secret fields.
 - [Entity reference](docs/ENTITIES.md)
 - [Architecture and state authority](docs/ARCHITECTURE.md)
 - [Troubleshooting and safe log redaction](docs/TROUBLESHOOTING.md)
-- [v0.1.1 release-candidate acceptance report](docs/ACCEPTANCE_REPORT_v0.1.1.md)
-- [v0.1.1 patch-release checklist](docs/RELEASE_CHECKLIST_v0.1.1.md)
+- [Superseded v0.1.1 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.1.md)
+- [Superseded v0.1.1 patch-release checklist](docs/RELEASE_CHECKLIST_v0.1.1.md)
 - [Historical v0.1.0 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.0.md)
 - [Historical v0.1.0 release checklist](docs/RELEASE_CHECKLIST.md)
 - [Changelog](CHANGELOG.md)

@@ -944,7 +944,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                 instance = self.coordinator(devices=devices)
                 self.assertIs(instance.gritlock_state, expected)
 
-    def test_gritlock_mqtt_consensus_uses_exact_gl_and_advisory_gte(self):
+    def test_gritlock_mqtt_fallback_uses_dual_participant_modes(self):
         devices = _device_map()
         devices["trigger"] = [
             {"id": "trigger-one"},
@@ -952,7 +952,7 @@ class CoordinatorMqttTests(unittest.TestCase):
         ]
         instance = self.coordinator(devices=devices)
 
-        for trigger_id, advisory_gte in (
+        for trigger_id, gte in (
             ("trigger-one", 1),
             ("trigger-two", 0),
         ):
@@ -962,7 +962,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                     device_type="trigger",
                     device_id=trigger_id,
                     message_type="gl",
-                    payload={"gte": advisory_gte, "gls": 1},
+                    payload={"gte": gte, "gls": 1},
                 )
             )
         generation = instance._gritlock_active_generation
@@ -976,7 +976,7 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertTrue(instance.gritlock_state)
         self.assertEqual(
             instance.gritlock_participating_trigger_ids,
-            frozenset({"trigger-one", "trigger-two"}),
+            frozenset({"trigger-one"}),
         )
 
         self.assertFalse(
@@ -1010,6 +1010,91 @@ class CoordinatorMqttTests(unittest.TestCase):
             )
         )
         self.assertFalse(instance.gritlock_state)
+
+    def test_gritlock_mixed_fallback_selects_only_gte_one(self):
+        explicit_ids = tuple(f"trigger-{index}" for index in range(7))
+        nonparticipant_ids = ("trigger-seven", "trigger-eight")
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": trigger_id}
+            for trigger_id in explicit_ids + nonparticipant_ids
+        ]
+        instance = self.coordinator(devices=devices)
+
+        for trigger_id in explicit_ids:
+            self.assertTrue(
+                self.send(
+                    instance,
+                    device_type="trigger",
+                    device_id=trigger_id,
+                    message_type="gl",
+                    payload={"gte": 1, "gls": 1},
+                )
+            )
+        for trigger_id, locked in zip(
+            nonparticipant_ids,
+            (False, True),
+            strict=True,
+        ):
+            self.assertTrue(
+                self.send(
+                    instance,
+                    device_type="trigger",
+                    device_id=trigger_id,
+                    message_type="gl",
+                    payload={"gte": 0, "gls": locked},
+                )
+            )
+
+        generation = instance._gritlock_active_generation
+        self.assertTrue(
+            instance._settle_gritlock_generation(
+                generation.generation_id,
+                force=True,
+            )
+        )
+        self.assertTrue(instance.gritlock_state)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset(explicit_ids),
+        )
+
+    def test_gritlock_mixed_fallback_participant_disagreement_is_unknown(self):
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one"},
+            {"id": "trigger-two"},
+            {"id": "trigger-zero"},
+        ]
+        instance = self.coordinator(devices=devices)
+
+        for trigger_id, gte, locked in (
+            ("trigger-one", 1, True),
+            ("trigger-two", 1, False),
+            ("trigger-zero", 0, True),
+        ):
+            self.assertTrue(
+                self.send(
+                    instance,
+                    device_type="trigger",
+                    device_id=trigger_id,
+                    message_type="gl",
+                    payload={"gte": gte, "gls": locked},
+                )
+            )
+
+        generation = instance._gritlock_active_generation
+        self.assertTrue(
+            instance._settle_gritlock_generation(
+                generation.generation_id,
+                force=True,
+            )
+        )
+        self.assertIsNone(instance.gritlock_state)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset({"trigger-one", "trigger-two"}),
+        )
 
     def test_gritlock_gte_zero_fallback_settles_both_states(self):
         trigger_ids = tuple(f"trigger-{index}" for index in range(6))
@@ -1046,7 +1131,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                     frozenset(trigger_ids),
                 )
 
-    def test_gritlock_rest_participants_override_advisory_gte(self):
+    def test_gritlock_rest_participants_override_mqtt_gte_selection(self):
         devices = _device_map()
         devices["trigger"] = [
             {"id": "trigger-one", "gritLockEnabled": True},
@@ -1082,7 +1167,7 @@ class CoordinatorMqttTests(unittest.TestCase):
             frozenset({"trigger-one", "trigger-two"}),
         )
 
-        for trigger_id, advisory_gte, locked in (
+        for trigger_id, gte, locked in (
             ("trigger-one", 0, True),
             ("trigger-two", 0, True),
             ("trigger-disabled", 1, False),
@@ -1093,7 +1178,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                     device_type="trigger",
                     device_id=trigger_id,
                     message_type="gl",
-                    payload={"gte": advisory_gte, "gls": locked},
+                    payload={"gte": gte, "gls": locked},
                 )
             )
         generation = instance._gritlock_active_generation
@@ -1205,7 +1290,7 @@ class CoordinatorMqttTests(unittest.TestCase):
                 device_type="trigger",
                 device_id="trigger-one",
                 message_type="gl",
-                payload={"gte": 0, "gls": 0},
+                payload={"gte": 1, "gls": 0},
             )
         )
         generation = instance._gritlock_active_generation
@@ -1224,6 +1309,7 @@ class CoordinatorMqttTests(unittest.TestCase):
         observation = generation.observations["trigger-one"]
         self.assertEqual(len(generation.observations), 1)
         self.assertGreater(observation.receive_sequence, first_sequence)
+        self.assertFalse(observation.explicitly_participating)
         self.assertTrue(observation.locked)
         self.assertTrue(
             instance._settle_gritlock_generation(
@@ -2594,6 +2680,165 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                     instance.gritlock_participating_trigger_ids,
                     frozenset(trigger_ids),
                 )
+
+    async def test_gritlock_mixed_command_confirms_after_quiet_settlement(self):
+        explicit_ids = tuple(f"trigger-{index}" for index in range(7))
+        zero_ids = ("trigger-seven", "trigger-eight")
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": trigger_id} for trigger_id in explicit_ids + zero_ids
+        ]
+        instance = self.coordinator(FakeApi(), devices)
+        instance.set_mqtt_connected(True)
+        boundary = instance.mqtt_receive_sequence
+        generation_id = instance.begin_gritlock_generation(boundary)
+        confirmation = asyncio.create_task(
+            instance.async_confirm_gritlock_state(
+                True,
+                generation_id=generation_id,
+                timeout=0.2,
+            )
+        )
+        await asyncio.sleep(0)
+
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_SETTLE_TIME",
+            0.001,
+        ):
+            for trigger_id in explicit_ids:
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "gl",
+                        {"gte": 1, "gls": 1},
+                    )
+                )
+            for trigger_id, locked in zip(
+                zero_ids,
+                (False, True),
+                strict=True,
+            ):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "gl",
+                        {"gte": 0, "gls": locked},
+                    )
+                )
+            self.assertFalse(confirmation.done())
+            self.assertIsNone(instance.gritlock_state)
+            generation = instance._gritlock_active_generation
+            self.assertEqual(generation.generation_id, generation_id)
+            self.assertTrue(
+                all(
+                    observation.receive_sequence > boundary
+                    for observation in generation.observations.values()
+                )
+            )
+            settle_task = instance._gritlock_settle_task
+            self.assertIsNotNone(settle_task)
+            await asyncio.wait_for(settle_task, timeout=1)
+
+        self.assertTrue(await asyncio.wait_for(confirmation, timeout=1))
+        self.assertTrue(instance.gritlock_state)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset(explicit_ids),
+        )
+
+    async def test_gritlock_mixed_then_gte_zero_command_is_per_generation(self):
+        explicit_ids = tuple(f"trigger-{index}" for index in range(7))
+        zero_ids = ("trigger-seven", "trigger-eight")
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": trigger_id} for trigger_id in explicit_ids + zero_ids
+        ]
+        instance = self.coordinator(FakeApi(), devices)
+        instance.set_mqtt_connected(True)
+
+        for trigger_id in explicit_ids:
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    trigger_id,
+                    "gl",
+                    {"gte": 1, "gls": 1},
+                )
+            )
+        for trigger_id in zero_ids:
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    trigger_id,
+                    "gl",
+                    {"gte": 0, "gls": 1},
+                )
+            )
+        first = instance._gritlock_active_generation
+        self.assertTrue(
+            instance._settle_gritlock_generation(
+                first.generation_id,
+                force=True,
+            )
+        )
+        self.assertTrue(instance.gritlock_state)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset(explicit_ids),
+        )
+
+        boundary = instance.mqtt_receive_sequence
+        generation_id = instance.begin_gritlock_generation(boundary)
+        self.assertGreater(generation_id, first.generation_id)
+        confirmation = asyncio.create_task(
+            instance.async_confirm_gritlock_state(
+                False,
+                generation_id=generation_id,
+                timeout=0.2,
+            )
+        )
+        await asyncio.sleep(0)
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_SETTLE_TIME",
+            0.001,
+        ):
+            for trigger_id in zero_ids:
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "gl",
+                        {"gte": 0, "gls": 0},
+                    )
+                )
+            generation = instance._gritlock_active_generation
+            self.assertEqual(generation.generation_id, generation_id)
+            self.assertEqual(set(generation.observations), set(zero_ids))
+            self.assertTrue(
+                all(
+                    observation.receive_sequence > boundary
+                    for observation in generation.observations.values()
+                )
+            )
+            settle_task = instance._gritlock_settle_task
+            self.assertIsNotNone(settle_task)
+            await asyncio.wait_for(settle_task, timeout=1)
+
+        self.assertTrue(await asyncio.wait_for(confirmation, timeout=1))
+        self.assertFalse(instance.gritlock_state)
+        self.assertEqual(
+            instance.gritlock_participating_trigger_ids,
+            frozenset(zero_ids),
+        )
 
     async def test_gritlock_stale_settled_state_cannot_confirm_command(self):
         devices = _device_map()

@@ -1,62 +1,76 @@
 # v0.1.1 acceptance report
 
-This report covers the `v0.1.1` patch release candidate. It does not claim that
-`v0.1.1` has been tagged or published.
+This report records the superseded `v0.1.1` patch release candidate. `v0.1.1`
+was not tagged or published.
 
 ## Scope
 
-The patch is limited to GRITLock compatibility with trigger `/gl` MQTT messages
-whose advisory `gte` field is `0`. It does not change API authentication,
+The candidate attempted to make GRITLock compatible with trigger `/gl` MQTT
+messages whose `gte` field was `0`. It did not change API authentication,
 commands, entity identity, polling, configuration, or other device behavior.
 
-`gls` remains the authoritative live lock state. A complete, valid REST
-`gritLockEnabled` participant set takes precedence. When that metadata is absent
-or unusable, the exact bounded set of unique triggers observed in the fresh
-quiet-settled `/gl` generation defines the participants. `gte` is strictly
-validated but advisory only. Empty, incomplete, contradictory, stale,
-overflowing, timed-out, and unsettled generations fail closed.
+`gls` remained the authoritative live lock state and complete, valid REST
+`gritLockEnabled` participant metadata retained precedence. When REST metadata
+was unavailable, however, the v0.1.1 candidate treated every fresh observation
+as a participant and did not preserve the fresh generation's `gte=1` selector
+semantics.
 
-## Automated validation
+## Two-system live result
 
-Release-preparation validation on 2026-08-05 produced these network-free totals:
+User-provided live acceptance evidence established two valid deployment
+patterns without recording any address, credential, identifier, or raw payload:
+
+- Jeff's installation passed Lock and Unlock with all six fresh triggers
+  reporting `gte=0`, using unanimous `gls=1` and `gls=0` respectively.
+- Dion's installation exposed a regression. Its mixed Lock generation contained
+  seven `gte=1` participants plus two `gte=0` nonparticipants. A later Unlock
+  generation contained only the two `gte=0` triggers. Treating every observation
+  in the mixed generation as a participant was incompatible with this system's
+  explicit-selector behavior.
+
+The all-zero result proves that `gte=0` is not a universal exclusion rule. The
+mixed result proves that, when any fresh observation has `gte=1`, the exact
+fresh `gte=1` subset must define MQTT fallback participants.
+
+## Corrective process
+
+The v0.1.1 candidate is superseded by the v0.1.2 corrective process. The safe
+per-generation fallback is:
+
+1. Use a complete, valid REST `gritLockEnabled` participant set when available.
+2. Otherwise, after quiet settlement, use exactly the fresh `gte=1` trigger IDs
+   if that subset is nonempty.
+3. If no fresh observation has `gte=1`, use all unique triggers observed in that
+   fresh generation.
+4. Never persist MQTT-derived participant IDs into an unrelated generation.
+
+Both installations require explicit Lock and Unlock retesting before v0.1.2
+publication. The original fail-closed bounds, ordering, cancellation, disconnect,
+overflow, timeout, and stale-generation requirements remain release gates.
+
+## Original automated validation
+
+The v0.1.1 release-preparation validation on 2026-08-05 was network-free:
 
 - 10 focused documentation tests passed.
 - 4 focused manifest compatibility tests passed.
 - 362 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
 - 31 Python files compiled in memory and parsed as AST.
 - 3 JSON files and 7 YAML files parsed successfully.
-- `git diff --check` passed.
-- The added-line sensitive-value scan found no credential, private-address,
-  private-key, live-identifier, or credential-bearing URL values.
+- `git diff --check` and the added-line sensitive-value scan passed.
 
-Official HACS and Hassfest validation remains a CI release gate; local
-HACS/Hassfest-compatible manifest and repository tests passed.
-
-## Required live verification
-
-Before publication, perform an explicitly authorised live verification on
-Jeff's installation and record all of the following:
-
-- GRITLock **Lock** completes with retained/current trigger observations showing
-  `gte=0` and `gls=1`.
-- GRITLock **Unlock** completes with retained/current trigger observations
-  showing `gte=0` and `gls=0`.
-- Neither command produces a false confirmation-failure toast.
-- Startup state, external GRITLock changes, reconnect behavior, and the original
-  installation show no regression.
-- A clean HACS installation of the candidate succeeds.
-
-This release-preparation task performs no live verification and contacts no API,
-MQTT broker, Home Assistant instance, network host, or physical equipment.
+Those results did not encode the later two-system mixed-generation evidence and
+do not make the superseded candidate acceptable for publication.
 
 ## Publication state
 
-`v0.1.0` remains the latest published release. The `v0.1.1` tag, GitHub release,
-release notes, and final HACS installation from the published artifact remain
-pending.
+`v0.1.0` remains the latest published release. No `v0.1.1` tag, GitHub release,
+or published HACS artifact is claimed by this report. The manifest remains at
+`0.1.1` until the formal v0.1.2 release-preparation process occurs after both
+systems pass.
 
-**Acceptance status:** Conditionally accepted as v0.1.1 release candidate,
-subject to live verification and publication steps.
+**Acceptance status:** Superseded by the v0.1.2 corrective patch process;
+`v0.1.1` is not accepted for publication.
 
 See the [v0.1.1 release checklist](RELEASE_CHECKLIST_v0.1.1.md) and the
 [historical v0.1.0 acceptance report](ACCEPTANCE_REPORT_v0.1.0.md).
