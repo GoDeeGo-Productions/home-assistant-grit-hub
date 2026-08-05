@@ -26,7 +26,9 @@ REQUIRED_FILES = (
     "docs/ARCHITECTURE.md",
     "docs/TROUBLESHOOTING.md",
     "docs/ACCEPTANCE_REPORT_v0.1.0.md",
+    "docs/ACCEPTANCE_REPORT_v0.1.1.md",
     "docs/RELEASE_CHECKLIST.md",
+    "docs/RELEASE_CHECKLIST_v0.1.1.md",
     "docs/REPOSITORY_TRANSFER.md",
     "docs/REPOSITORY_METADATA.md",
 )
@@ -77,22 +79,64 @@ class DocumentationTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         readme_flat = " ".join(readme.replace(">", "").split())
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        acceptance = (
+        acceptance_v010 = (
             ROOT / "docs/ACCEPTANCE_REPORT_v0.1.0.md"
+        ).read_text(encoding="utf-8")
+        acceptance_v011 = (
+            ROOT / "docs/ACCEPTANCE_REPORT_v0.1.1.md"
+        ).read_text(encoding="utf-8")
+        checklist_v011 = (
+            ROOT / "docs/RELEASE_CHECKLIST_v0.1.1.md"
         ).read_text(encoding="utf-8")
         release_url = (
             "https://github.com/GoDeeGo-Productions/"
             "home-assistant-grit-hub/releases/tag/v0.1.0"
         )
-        release_documents = (readme, changelog, acceptance)
-        self.assertEqual(manifest["version"], "0.1.0")
-        self.assertIn("`v0.1.0`", readme_flat)
-        self.assertIn("was released on 2026-08-04", readme_flat)
+        historical_documents = (readme, changelog, acceptance_v010)
+        candidate_documents = (
+            readme,
+            changelog,
+            acceptance_v011,
+            checklist_v011,
+        )
+        self.assertEqual(manifest["version"], "0.1.1")
+        self.assertIn(
+            "`v0.1.1` is the current release candidate",
+            readme_flat,
+        )
+        self.assertIn("remains the latest published release", readme_flat)
         self.assertIn("0.1.0 — 2026-08-04", changelog)
-        for document in release_documents:
+        self.assertIn("0.1.1 — Pending release", changelog)
+        acceptance_v011_flat = " ".join(acceptance_v011.split())
+        self.assertIn(
+            "Conditionally accepted as v0.1.1 release candidate, subject to "
+            "live verification and publication steps.",
+            acceptance_v011_flat,
+        )
+        self.assertIn("Jeff's installation", acceptance_v011)
+        for pending_item in (
+            "- [ ] Manifest version confirmed as `0.1.1`",
+            "- [ ] Full unit suite and CI green",
+            "- [ ] HACS validation green",
+            "- [ ] Hassfest validation green",
+            "- [ ] Clean install on Jeff's system",
+            "- [ ] GRITLock Lock succeeds with `gte=0` and `gls=1`",
+            "- [ ] GRITLock Unlock succeeds with `gte=0` and `gls=0`",
+            "- [ ] No false confirmation toast for Lock or Unlock",
+            "- [ ] No regression on the original installation",
+            "- [ ] Tag `v0.1.1` created",
+            "- [ ] GitHub release created",
+            "- [ ] Release notes published",
+            "- [ ] Final HACS install completed from published `v0.1.1`",
+        ):
+            self.assertIn(pending_item, checklist_v011)
+        for document in historical_documents:
             self.assertIn(release_url, document)
-            self.assertNotIn("has not yet been tagged or published", document)
-            self.assertNotIn("0.1.0 — Pending release", document)
+        for document in candidate_documents:
+            self.assertNotIn("v0.1.1 was published", document)
+            self.assertNotIn("v0.1.1 has been published", document)
+            self.assertNotIn("0.1.1 — 2026-", document)
+        self.assertNotIn("0.1.0 — Pending release", changelog)
 
     def test_published_release_and_remaining_decisions_are_consistent(
         self,
