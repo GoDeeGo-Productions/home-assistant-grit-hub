@@ -275,6 +275,20 @@ class DocumentationTests(unittest.TestCase):
         ):
             self.assertIn(expected, architecture)
 
+    def test_gritlock_gte_zero_compatibility_is_documented(self) -> None:
+        architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(
+            encoding="utf-8"
+        )
+        entities = (ROOT / "docs/ENTITIES.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs/TROUBLESHOOTING.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("`gls` is the live lock state", architecture)
+        self.assertIn("REST `gritLockEnabled` participant set", architecture)
+        self.assertIn("`gte` is strictly validated but advisory", architecture)
+        self.assertIn("`gte` remains advisory", entities)
+        self.assertIn("`gte=0` is compatible", troubleshooting)
+
     def test_mqtt_topic_scopes_and_safe_diagnostic_command_are_accurate(self) -> None:
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(
             encoding="utf-8"

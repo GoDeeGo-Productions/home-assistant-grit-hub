@@ -120,6 +120,16 @@ capture and open a new MQTT generation before REST and require its settled
 consensus. The LED writes via REST and requires a newer matching full hub
 refresh. No current displayed value alone confirms a command.
 
+For GRITLock, exact trigger `/gl` field `gls` is the live lock state. A complete,
+valid REST `gritLockEnabled` participant set takes precedence and every required
+trigger must appear in the fresh generation. When that REST metadata is absent
+or unusable, the bounded participant set is the exact set of unique trigger IDs
+observed in the fresh `/gl` burst after the quiet-settle period. All required
+observations must agree on `gls`; zero observations, participant-limit
+overflow, a missing REST participant, or disagreement remains Unknown. MQTT `gte` is strictly validated but advisory:
+it is not a universal exclusion rule and cannot add or remove required
+participants.
+
 RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at
 most one active task and one trailing request per reader, tracks at most 64
 readers, and shares a four-request concurrency limit. Gate/RFID reconnect

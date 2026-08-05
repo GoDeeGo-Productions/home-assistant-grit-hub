@@ -5,7 +5,11 @@ versioning for public releases.
 
 ## Unreleased
 
-No unreleased changes are recorded.
+### Fixed
+
+- Made GRITLock participant selection compatible with settled fresh `/gl`
+  generations whose advisory `gte` values are all `0`, while preserving strict
+  REST participant sets where available.
 
 ## 0.1.0 — 2026-08-04
 
