@@ -44,11 +44,16 @@ One system-wide `LockEntity` is created. `PUT /api/hub/lockout` receives
 authority settles, strict `gritLockEnabled` and `gritLockState` values from
 trigger inventory may provide provisional startup state.
 
-Exact `trigger/<id>/gl` messages provide live authority. Participating triggers
-must unanimously report the current generation; missing, contradictory, or
-incomplete observations produce Unknown. A command is confirmed only by a fresh
-settled generation. MQTT disconnect discards incomplete generations and may
-return to valid provisional REST state.
+Exact `trigger/<id>/gl` messages provide live authority, and `gls` is the live
+lock state. A complete, valid REST `gritLockEnabled` set defines the required
+participants when available. Otherwise the bounded set of unique triggers in the
+fresh quiet-settled `/gl` burst defines that generation's participants. MQTT
+`gte` remains advisory and is not treated as a universal exclusion flag. Every
+required observation must agree on `gls`; zero observations, participant-
+limit overflow, missing REST participants, disagreement, or an unsettled
+generation produces Unknown. A
+command is confirmed only by a newer fresh settled generation. MQTT disconnect
+discards incomplete generations and may return to valid provisional REST state.
 
 ### RFID reader
 

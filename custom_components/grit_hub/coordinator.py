@@ -91,7 +91,6 @@ _INVALID = object()
 class _GritlockObservation:
     """One bounded authoritative trigger /gl observation."""
 
-    participating: bool
     locked: bool
     receive_sequence: int
     received_monotonic: float
@@ -104,8 +103,9 @@ class _GritlockGeneration:
     generation_id: int
     after_sequence: int
     rest_participants: frozenset[str]
-    rest_participants_complete: bool
+    rest_participants_usable: bool
     observations: dict[str, _GritlockObservation]
+    overflowed: bool = False
     last_received_monotonic: float | None = None
 
 
@@ -1495,23 +1495,29 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self,
         devices: Any | None = None,
     ) -> tuple[frozenset[str], bool]:
-        """Return bounded, uniquely identified REST participants."""
+        """Return bounded participants and whether REST metadata is usable."""
         if devices is None:
             data = self.data if isinstance(self.data, dict) else {}
             devices = data.get("devices")
         if not isinstance(devices, dict):
-            return frozenset(), True
+            return frozenset(), False
         triggers = devices.get("trigger")
         if not isinstance(triggers, list):
-            return frozenset(), True
+            return frozenset(), False
 
         identifiers: list[str] = []
         complete = True
+        metadata_seen = False
         for trigger in triggers:
-            if (
-                not isinstance(trigger, dict)
-                or trigger.get("gritLockEnabled") is not True
-            ):
+            if not isinstance(trigger, dict):
+                complete = False
+                continue
+            enabled = trigger.get("gritLockEnabled", _INVALID)
+            if not isinstance(enabled, bool):
+                complete = False
+                continue
+            metadata_seen = True
+            if not enabled:
                 continue
             identifier = _telemetry_identifier(trigger)
             if identifier is None:
@@ -1533,7 +1539,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if len(unique) > _MAX_GRITLOCK_OBSERVATIONS:
             complete = False
             unique = unique[:_MAX_GRITLOCK_OBSERVATIONS]
-        return frozenset(unique), complete
+        return frozenset(unique), metadata_seen and complete
 
     def _cancel_gritlock_settle_task(self) -> None:
         """Cancel the one bounded generation-settlement task."""
@@ -1560,13 +1566,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self,
         after_sequence: int,
     ) -> _GritlockGeneration:
-        participants, complete = self._rest_gritlock_participants()
+        participants, usable = self._rest_gritlock_participants()
         self._gritlock_generation_sequence += 1
         generation = _GritlockGeneration(
             generation_id=self._gritlock_generation_sequence,
             after_sequence=after_sequence,
             rest_participants=participants,
-            rest_participants_complete=complete,
+            rest_participants_usable=usable,
             observations={},
         )
         self._gritlock_active_generation = generation
@@ -1599,21 +1605,16 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _evaluate_gritlock_generation(
         generation: _GritlockGeneration,
     ) -> tuple[bool | None, frozenset[str]]:
-        participants = set(generation.rest_participants)
-        for trigger_id, observation in generation.observations.items():
-            if observation.participating:
-                participants.add(trigger_id)
-            else:
-                participants.discard(trigger_id)
-
-        if len(participants) > _MAX_GRITLOCK_OBSERVATIONS:
+        if generation.overflowed:
             return None, frozenset()
-        required = frozenset(participants)
-        if (
-            not generation.rest_participants_complete
-            or not required
-            or not required.issubset(generation.observations)
-        ):
+        required = (
+            generation.rest_participants
+            if generation.rest_participants_usable
+            else frozenset(generation.observations)
+        )
+        if len(required) > _MAX_GRITLOCK_OBSERVATIONS:
+            return None, frozenset()
+        if not required or not required.issubset(generation.observations):
             return None, required
 
         states = {
@@ -1718,9 +1719,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         generation = self._gritlock_active_generation
         if generation is None:
             return
-        participants, complete = self._rest_gritlock_participants(devices)
+        participants, usable = self._rest_gritlock_participants(devices)
         generation.rest_participants = participants
-        generation.rest_participants_complete = complete
+        generation.rest_participants_usable = usable
         self._wake_mqtt_state_waiters()
 
 
@@ -2104,7 +2105,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             return await asyncio.wait_for(wait_for_result(), timeout=timeout)
         except asyncio.TimeoutError:
-            self._settle_gritlock_generation(generation_id, force=True)
+            self._settle_gritlock_generation(generation_id)
             settled = self._gritlock_generation_results.get(generation_id)
             return settled is not None and settled.state is expected
 
@@ -2114,9 +2115,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         payload: dict[str, Any],
     ) -> bool:
         """Add strict trigger /gl evidence to one bounded generation."""
-        participating = _strict_binary_bool(payload.get("gte", _INVALID))
+        advisory_participating = _strict_binary_bool(
+            payload.get("gte", _INVALID)
+        )
         locked = _strict_binary_bool(payload.get("gls", _INVALID))
-        if participating is _INVALID or locked is _INVALID:
+        if advisory_participating is _INVALID or locked is _INVALID:
             _LOGGER.debug(
                 "GRIT MQTT message rejected: invalid GRITLock state"
             )
@@ -2145,6 +2148,10 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and len(generation.observations)
             >= _MAX_GRITLOCK_OBSERVATIONS
         ):
+            generation.overflowed = True
+            generation.last_received_monotonic = now
+            self._ensure_gritlock_settle_task(generation.generation_id)
+            self._wake_mqtt_state_waiters()
             _LOGGER.debug(
                 "GRIT MQTT message rejected: GRITLock state limit reached"
             )
@@ -2152,7 +2159,6 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._mqtt_receive_sequence += 1
         generation.observations[trigger_id] = _GritlockObservation(
-            participating=participating,
             locked=locked,
             receive_sequence=self._mqtt_receive_sequence,
             received_monotonic=now,

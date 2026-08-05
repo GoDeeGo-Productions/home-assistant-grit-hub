@@ -89,10 +89,13 @@ state rather than inventing one. The default poll is a 30-second fallback.
 
 ## GRITLock is Unknown
 
-GRITLock requires unanimous current-generation `/gl` observations from required
-participating triggers. No participants, missing messages, disagreement, or
-incomplete generations correctly produce Unknown. After MQTT disconnect it may
-fall back to valid provisional strict REST trigger fields.
+GRITLock uses `gls` from exact current-generation `/gl` messages as live state.
+A complete valid REST `gritLockEnabled` set defines required participants when
+available; otherwise the fresh bounded quiet-settled observed burst defines the
+participant set. `gte=0` is compatible and is not a universal exclusion rule.
+Zero observations, participant-limit overflow, missing required messages,
+disagreement, or an unsettled generation correctly produces Unknown. After MQTT disconnect GRITLock may fall
+back to valid provisional strict REST trigger fields.
 
 ## Collector command waits or fails
 
