@@ -79,9 +79,6 @@ class DocumentationTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         readme_flat = " ".join(readme.replace(">", "").split())
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        acceptance_v010 = (
-            ROOT / "docs/ACCEPTANCE_REPORT_v0.1.0.md"
-        ).read_text(encoding="utf-8")
         acceptance_v011 = (
             ROOT / "docs/ACCEPTANCE_REPORT_v0.1.1.md"
         ).read_text(encoding="utf-8")
@@ -90,77 +87,59 @@ class DocumentationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         release_url = (
             "https://github.com/GoDeeGo-Productions/"
-            "home-assistant-grit-hub/releases/tag/v0.1.0"
+            "home-assistant-grit-hub/releases/tag/v0.1.1"
         )
-        historical_documents = (readme, changelog, acceptance_v010)
-        candidate_documents = (
-            readme,
-            changelog,
-            acceptance_v011,
-            checklist_v011,
-        )
+
         self.assertEqual(manifest["version"], "0.1.1")
         self.assertIn(
             "a `v0.1.2` corrective patch candidate is in development",
             readme_flat,
         )
-        self.assertIn(
-            "The `v0.1.1` release candidate is superseded",
-            readme_flat,
-        )
+        self.assertIn("The `v0.1.1` release was published", readme_flat)
         self.assertIn("remains the latest published release", readme_flat)
+        self.assertIn(release_url, readme)
         self.assertIn("0.1.0 — 2026-08-04", changelog)
-        self.assertIn("0.1.1 — Pending release", changelog)
+        self.assertIn("0.1.1 — 2026-08-05", changelog)
+        self.assertIn(release_url, changelog)
         self.assertIn(
-            "Corrected the v0.1.1 GRITLock participant-selection regression",
+            "Corrected the end-to-end GRITLock state pipeline",
             changelog,
         )
-        acceptance_v011_flat = " ".join(acceptance_v011.split())
+
+        acceptance_flat = " ".join(acceptance_v011.split())
         self.assertIn(
-            "Superseded by the v0.1.2 corrective patch process; `v0.1.1` is "
-            "not accepted for publication.",
-            acceptance_v011_flat,
+            "Published v0.1.1 is superseded; v0.1.2 remains blocked "
+            "pending live acceptance on Dion's and Jeff's installations.",
+            acceptance_flat,
         )
-        self.assertIn("Jeff's installation", acceptance_v011)
-        self.assertIn("Dion's installation", acceptance_v011)
-        for supersession_item in (
+        for evidence_item in (
             "- [x] All-`gte=0` Lock and Unlock passed on Jeff's installation",
             "- [x] Mixed-`gte` participant regression reproduced on Dion's "
             "installation",
-            "- [x] PR #25 corrected dual-mode participant selection",
-            "- [x] Post-PR #25 command delivery and physical transition "
-            "succeeded on Dion's installation",
-            "- [x] Post-PR #25 confirmation and immediate entity propagation "
-            "failed on Dion's installation",
-            "- [x] v0.1.1 candidate superseded by the v0.1.2 corrective "
-            "process",
+            "- [x] PR #26 corrected command-generation settlement",
+            "- [x] Exact merged PR #26 build reproduced wrong startup and "
+            "post-command state on Dion's installation",
+            "- [x] End-to-end state-pipeline cause identified and corrected "
+            "offline",
+        ):
+            self.assertIn(evidence_item, checklist_v011)
+        for pending_item in (
             "- [ ] Corrective v0.1.2 Lock, Unlock, confirmation, and "
             "immediate entity state pass on both installations",
-        ):
-            self.assertIn(supersession_item, checklist_v011)
-        for pending_item in (
-            "- [ ] Manifest version confirmed as `0.1.1`",
-            "- [ ] Full unit suite and CI green",
-            "- [ ] HACS validation green",
-            "- [ ] Hassfest validation green",
-            "- [ ] Clean install on Jeff's system",
-            "- [ ] GRITLock Lock succeeds with `gte=0` and `gls=1`",
-            "- [ ] GRITLock Unlock succeeds with `gte=0` and `gls=0`",
-            "- [ ] No false confirmation toast for Lock or Unlock",
-            "- [ ] No regression on the original installation",
-            "- [ ] Tag `v0.1.1` created",
-            "- [ ] GitHub release created",
-            "- [ ] Release notes published",
-            "- [ ] Final HACS install completed from published `v0.1.1`",
+            "- [ ] HACS validation green for the corrective branch",
+            "- [ ] Hassfest validation green for the corrective branch",
+            "- [ ] Jeff GRITLock Lock succeeds with all-`gte=0`, `gls=1`",
+            "- [ ] Jeff GRITLock Unlock succeeds with all-`gte=0`, `gls=0`",
+            "- [ ] Dion startup all-`gte=0`, `gls=0` displays Unlocked and "
+            "offers Lock",
+            "- [ ] Tag `v0.1.2` created",
+            "- [ ] GitHub release v0.1.2 created",
+            "- [ ] Final HACS install completed from published `v0.1.2`",
         ):
             self.assertIn(pending_item, checklist_v011)
-        for document in historical_documents:
-            self.assertIn(release_url, document)
-        for document in candidate_documents:
-            self.assertNotIn("v0.1.1 was published", document)
-            self.assertNotIn("v0.1.1 has been published", document)
-            self.assertNotIn("0.1.1 — 2026-", document)
-        self.assertNotIn("0.1.0 — Pending release", changelog)
+        self.assertNotIn("0.1.2 — 2026-", changelog)
+        self.assertNotIn("- [x] Tag `v0.1.2` created", checklist_v011)
+        self.assertNotIn("- [x] GitHub release v0.1.2 created", checklist_v011)
 
     def test_published_release_and_remaining_decisions_are_consistent(
         self,
@@ -366,6 +345,11 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("all-`gte=0` generation", entities)
         self.assertIn("two firmware patterns are", troubleshooting)
         self.assertIn("mixed burst uses exactly", troubleshooting)
+        self.assertIn("`gls=0` is unlocked (`False`)", architecture)
+        self.assertIn("exact `False` is authority, not", entities)
+        self.assertIn("entity is Unknown and unavailable", entities)
+        self.assertIn("fails that generation without erasing", troubleshooting)
+        self.assertNotIn("provisional REST startup state", entities)
 
     def test_mqtt_topic_scopes_and_safe_diagnostic_command_are_accurate(self) -> None:
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(

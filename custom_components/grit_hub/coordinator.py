@@ -19,7 +19,6 @@ from .const import (
     REST_DISCOVERY_TIMEOUT,
     SWITCH_DEVICE_TYPES,
 )
-from .hub import derive_gritlock_state
 
 _LOGGER = logging.getLogger(__name__)
 MQTT_STATE_KEY = "_grit_mqtt"
@@ -502,6 +501,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._hub_update_sequence = 0
         self._gritlock_update_sequence = 0
         self._gritlock_generation_sequence = 0
+        self._gritlock_authoritative_state: bool | None = None
         self._gritlock_active_generation: _GritlockGeneration | None = None
         self._gritlock_settled_generation: (
             _SettledGritlockGeneration | None
@@ -562,15 +562,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def gritlock_state(self) -> bool | None:
-        """Return MQTT consensus, or provisional REST startup evidence."""
-        if self._gritlock_settled_generation is not None:
-            return self._gritlock_settled_generation.state
-        devices = (
-            self.data.get("devices")
-            if isinstance(self.data, dict)
-            else None
-        )
-        return derive_gritlock_state(devices)
+        """Return the last valid authoritative MQTT consensus."""
+        return self._gritlock_authoritative_state
 
     @property
     def gritlock_participating_trigger_ids(self) -> frozenset[str]:
@@ -1560,11 +1553,12 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             task.cancel()
 
     def _reset_gritlock_mqtt_state(self) -> None:
-        """Discard MQTT generations so valid REST evidence is provisional again."""
+        """Discard MQTT generations and their authoritative live state."""
         self._cancel_gritlock_settle_task()
         self._gritlock_active_generation = None
         self._gritlock_settled_generation = None
         self._gritlock_generation_results.clear()
+        self._gritlock_authoritative_state = None
 
     def _new_gritlock_generation(
         self,
@@ -1611,9 +1605,10 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @staticmethod
     def _evaluate_gritlock_generation(
         generation: _GritlockGeneration,
-    ) -> tuple[bool | None, frozenset[str]]:
+    ) -> tuple[bool | None, frozenset[str], bool]:
+        """Return state, participants, and explicit-invalidity evidence."""
         if generation.overflowed:
-            return None, frozenset()
+            return None, frozenset(), False
         if generation.rest_participants_usable:
             required = generation.rest_participants
         else:
@@ -1626,16 +1621,17 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 generation.observations
             )
         if len(required) > _MAX_GRITLOCK_OBSERVATIONS:
-            return None, frozenset()
+            return None, frozenset(), False
         if not required or not required.issubset(generation.observations):
-            return None, required
+            return None, required, False
 
         states = {
             generation.observations[trigger_id].locked
             for trigger_id in required
         }
-        state = next(iter(states)) if len(states) == 1 else None
-        return state, required
+        if len(states) == 1:
+            return next(iter(states)), required, False
+        return None, required, True
 
     def _settle_gritlock_generation(
         self,
@@ -1658,7 +1654,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             return False
 
-        state, participants = self._evaluate_gritlock_generation(generation)
+        state, participants, invalidates_state = (
+            self._evaluate_gritlock_generation(generation)
+        )
         settled = _SettledGritlockGeneration(
             generation_id=generation_id,
             state=state,
@@ -1667,6 +1665,10 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._gritlock_active_generation = None
         self._gritlock_settled_generation = settled
         self._gritlock_generation_results[generation_id] = settled
+        if isinstance(state, bool):
+            self._gritlock_authoritative_state = state
+        elif invalidates_state:
+            self._gritlock_authoritative_state = None
         while (
             len(self._gritlock_generation_results)
             > _MAX_GRITLOCK_GENERATION_RESULTS

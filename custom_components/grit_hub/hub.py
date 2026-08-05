@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ipaddress import ip_address
 import re
-from typing import Any, Mapping
+from typing import Any
 
 _HUB_ID_PATTERN = re.compile(r"^[0-9A-Fa-f]{32}$")
 _MAX_HUB_TEXT_LENGTH = 128
@@ -82,31 +82,3 @@ def sanitize_hub_data(value: Any) -> dict[str, Any] | None:
                 sanitized["automaticGritLockTime"] = text
 
     return sanitized
-
-
-def derive_gritlock_state(devices: Any) -> bool | None:
-    """Derive unanimous state from participating trigger observations."""
-    if not isinstance(devices, Mapping):
-        return None
-    triggers = devices.get("trigger")
-    if not isinstance(triggers, list):
-        return None
-
-    states: list[bool] = []
-    for trigger in triggers:
-        if not isinstance(trigger, Mapping):
-            continue
-        if trigger.get("gritLockEnabled") is not True:
-            continue
-        state = trigger.get("gritLockState")
-        if not isinstance(state, bool):
-            return None
-        states.append(state)
-
-    if not states:
-        return None
-    if all(states):
-        return True
-    if not any(states):
-        return False
-    return None

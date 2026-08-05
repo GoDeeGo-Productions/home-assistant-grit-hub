@@ -1,8 +1,8 @@
 # v0.1.1 patch-release checklist
 
-This checklist records the superseded GRITLock `gte=0` compatibility candidate.
-`v0.1.1` was not tagged or published; its remaining publication items stay
-unchecked and must not be completed.
+This checklist records the published but superseded GRITLock `gte=0`
+compatibility patch and the remaining v0.1.2 corrective gates. `v0.1.1` was
+published on 2026-08-05; v0.1.2 is not tagged or published.
 
 ## Supersession evidence
 
@@ -11,35 +11,42 @@ unchecked and must not be completed.
 - [x] PR #25 corrected dual-mode participant selection
 - [x] Post-PR #25 command delivery and physical transition succeeded on Dion's installation
 - [x] Post-PR #25 confirmation and immediate entity propagation failed on Dion's installation
-- [x] v0.1.1 candidate superseded by the v0.1.2 corrective process
+- [x] PR #26 corrected command-generation settlement
+- [x] Exact merged PR #26 build reproduced wrong startup and post-command state on Dion's installation
+- [x] End-to-end state-pipeline cause identified and corrected offline
 - [ ] Corrective v0.1.2 Lock, Unlock, confirmation, and immediate entity state pass on both installations
 
-## Candidate validation
+## Corrective validation
 
-- [ ] Manifest version confirmed as `0.1.1`
-- [ ] Full unit suite and CI green
-- [ ] HACS validation green
-- [ ] Hassfest validation green
-- [ ] Changelog and acceptance report finalised
-- [ ] Sensitive-value scan clean
-- [ ] `git diff --check` clean
+- [x] Manifest remains `0.1.1`
+- [x] Complete local unit suite green
+- [ ] HACS validation green for the corrective branch
+- [ ] Hassfest validation green for the corrective branch
+- [x] Changelog, architecture, entity, troubleshooting, and acceptance documentation updated
+- [x] Sensitive-value scan clean
+- [x] `git diff --check` clean
 
-## Required live acceptance
+## Required v0.1.2 live acceptance
 
-- [ ] Clean install on Jeff's system
-- [ ] GRITLock Lock succeeds with `gte=0` and `gls=1`
-- [ ] GRITLock Unlock succeeds with `gte=0` and `gls=0`
+- [ ] Clean corrected build installed on Jeff's system
+- [ ] Jeff GRITLock Lock succeeds with all-`gte=0`, `gls=1`
+- [ ] Jeff GRITLock Unlock succeeds with all-`gte=0`, `gls=0`
+- [ ] Clean corrected build installed on Dion's system
+- [ ] Dion startup all-`gte=0`, `gls=0` displays Unlocked and offers Lock
+- [ ] Dion mixed `gte=1`, `gls=1` generation displays Locked and offers Unlock
+- [ ] Dion fresh all-`gte=0`, `gls=0` Unlock confirms and displays Unlocked
 - [ ] No false confirmation toast for Lock or Unlock
-- [ ] No regression on the original installation
+- [ ] No regression on gate, RFID, collector, LED, config flow, or MQTT lifecycle
 
-## Publication
+## Publication history and next release
 
-- [ ] Final release commit selected
-- [ ] Tag `v0.1.1` created
-- [ ] GitHub release created
-- [ ] Release notes published
-- [ ] Final HACS install completed from published `v0.1.1`
+- [x] v0.1.1 tag and release recorded as published on 2026-08-05
+- [x] v0.1.1 release notes published
+- [ ] Final v0.1.2 release commit selected
+- [ ] Tag `v0.1.2` created
+- [ ] GitHub release v0.1.2 created
+- [ ] v0.1.2 release notes published
+- [ ] Final HACS install completed from published `v0.1.2`
 
-See the [v0.1.1 acceptance report](ACCEPTANCE_REPORT_v0.1.1.md). The published
-`v0.1.0` record remains in the
-[historical release checklist](RELEASE_CHECKLIST.md).
+See the [v0.1.1 acceptance report](ACCEPTANCE_REPORT_v0.1.1.md). The original
+[v0.1.0 release checklist](RELEASE_CHECKLIST.md) remains historical evidence.

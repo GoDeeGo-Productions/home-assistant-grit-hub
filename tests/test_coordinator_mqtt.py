@@ -897,53 +897,29 @@ class CoordinatorMqttTests(unittest.TestCase):
         self.assertIn("hub", second["errors"])
         self.assertIn("trigger", second["errors"])
 
-    def test_gritlock_state_requires_unanimous_participating_triggers(self):
+    def test_rest_gritlock_state_is_not_authoritative(self):
         cases = (
-            ([], None),
-            ([{"gritLockEnabled": False}], None),
-            (
-                [
-                    {"gritLockEnabled": True, "gritLockState": True},
-                    {"gritLockEnabled": True, "gritLockState": True},
-                ],
-                True,
-            ),
-            (
-                [
-                    {"gritLockEnabled": True, "gritLockState": False},
-                    {"gritLockEnabled": True, "gritLockState": False},
-                ],
-                False,
-            ),
-            (
-                [
-                    {"gritLockEnabled": True, "gritLockState": True},
-                    {"gritLockEnabled": True, "gritLockState": False},
-                ],
-                None,
-            ),
-            ([{"gritLockEnabled": True}], None),
-            (
-                [
-                    {
-                        "gritLockEnabled": False,
-                        "gritLockState": False,
-                    },
-                    {
-                        "gritLockEnabled": True,
-                        "gritLockState": True,
-                    },
-                ],
-                True,
-            ),
+            [],
+            [{"gritLockEnabled": False}],
+            [
+                {"gritLockEnabled": True, "gritLockState": True},
+                {"gritLockEnabled": True, "gritLockState": True},
+            ],
+            [
+                {"gritLockEnabled": True, "gritLockState": False},
+                {"gritLockEnabled": True, "gritLockState": False},
+            ],
+            [
+                {"gritLockEnabled": True, "gritLockState": True},
+                {"gritLockEnabled": True, "gritLockState": False},
+            ],
         )
-        for triggers, expected in cases:
+        for triggers in cases:
             with self.subTest(triggers=triggers):
                 devices = _device_map()
                 devices["trigger"] = triggers
                 instance = self.coordinator(devices=devices)
-                self.assertIs(instance.gritlock_state, expected)
-
+                self.assertIsNone(instance.gritlock_state)
     def test_gritlock_mqtt_fallback_uses_dual_participant_modes(self):
         devices = _device_map()
         devices["trigger"] = [
@@ -1164,6 +1140,131 @@ class CoordinatorMqttTests(unittest.TestCase):
             frozenset({"trigger-one", "trigger-two"}),
         )
 
+    def test_gritlock_settlement_preserves_exact_bool_and_notifies(self):
+        devices = _device_map()
+        devices["trigger"] = [{"id": "trigger-one"}]
+
+        for gls, expected in ((0, False), (1, True)):
+            with self.subTest(gls=gls):
+                instance = self.coordinator(devices=devices)
+                listener_updates = instance.listener_updates
+                self.assertTrue(
+                    self.send(
+                        instance,
+                        device_type="trigger",
+                        device_id="trigger-one",
+                        message_type="gl",
+                        payload={"gte": 0, "gls": gls},
+                    )
+                )
+                generation = instance._gritlock_active_generation
+                self.assertIs(
+                    generation.observations["trigger-one"].locked,
+                    expected,
+                )
+                self.assertTrue(
+                    instance._settle_gritlock_generation(
+                        generation.generation_id,
+                        force=True,
+                    )
+                )
+                settled = instance._gritlock_settled_generation
+                self.assertIs(settled.state, expected)
+                self.assertIs(instance.gritlock_state, expected)
+                self.assertEqual(
+                    instance.listener_updates,
+                    listener_updates + 1,
+                )
+
+    def test_incomplete_generation_preserves_prior_unlocked_state(self):
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": True},
+            {"id": "trigger-two", "gritLockEnabled": True},
+        ]
+        instance = self.coordinator(devices=devices)
+        for trigger_id in ("trigger-one", "trigger-two"):
+            self.assertTrue(
+                self.send(
+                    instance,
+                    device_type="trigger",
+                    device_id=trigger_id,
+                    message_type="gl",
+                    payload={"gte": 1, "gls": 0},
+                )
+            )
+        valid = instance._gritlock_active_generation
+        self.assertTrue(
+            instance._settle_gritlock_generation(
+                valid.generation_id,
+                force=True,
+            )
+        )
+        self.assertFalse(instance.gritlock_state)
+
+        self.assertTrue(
+            self.send(
+                instance,
+                device_type="trigger",
+                device_id="trigger-one",
+                message_type="gl",
+                payload={"gte": 1, "gls": 1},
+            )
+        )
+        incomplete = instance._gritlock_active_generation
+        self.assertTrue(
+            instance._settle_gritlock_generation(
+                incomplete.generation_id,
+                force=True,
+            )
+        )
+        self.assertIsNone(instance._gritlock_settled_generation.state)
+        self.assertFalse(instance.gritlock_state)
+
+    def test_gritlock_disagreement_explicitly_invalidates_prior_state(self):
+        devices = _device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": True},
+            {"id": "trigger-two", "gritLockEnabled": True},
+        ]
+        instance = self.coordinator(devices=devices)
+        for trigger_id in ("trigger-one", "trigger-two"):
+            self.assertTrue(
+                self.send(
+                    instance,
+                    device_type="trigger",
+                    device_id=trigger_id,
+                    message_type="gl",
+                    payload={"gte": 1, "gls": 0},
+                )
+            )
+        valid = instance._gritlock_active_generation
+        self.assertTrue(
+            instance._settle_gritlock_generation(
+                valid.generation_id,
+                force=True,
+            )
+        )
+        self.assertFalse(instance.gritlock_state)
+
+        for trigger_id, gls in (("trigger-one", 0), ("trigger-two", 1)):
+            self.assertTrue(
+                self.send(
+                    instance,
+                    device_type="trigger",
+                    device_id=trigger_id,
+                    message_type="gl",
+                    payload={"gte": 1, "gls": gls},
+                )
+            )
+        contradictory = instance._gritlock_active_generation
+        self.assertTrue(
+            instance._settle_gritlock_generation(
+                contradictory.generation_id,
+                force=True,
+            )
+        )
+        self.assertIsNone(instance.gritlock_state)
     def test_gritlock_rest_participants_override_mqtt_gte_selection(self):
         devices = _device_map()
         devices["trigger"] = [
@@ -3269,7 +3370,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             instance._settle_gritlock_generation(second.generation_id, force=True)
         )
-        self.assertIsNone(instance.gritlock_state)
+        self.assertTrue(instance.gritlock_state)
 
         for trigger_id in ("trigger-one", "trigger-two"):
             self.assertTrue(
@@ -3479,7 +3580,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
         instance.data = refreshed
         self.assertIsNone(instance.gritlock_state)
 
-    async def test_gritlock_disconnect_discards_active_generation_and_falls_back(self):
+    async def test_gritlock_disconnect_discards_mqtt_authority(self):
         devices = _device_map()
         devices["trigger"] = [
             {
@@ -3505,7 +3606,7 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(settle_task, return_exceptions=True)
         self.assertIsNone(instance._gritlock_active_generation)
         self.assertIsNone(instance._gritlock_settled_generation)
-        self.assertFalse(instance.gritlock_state)
+        self.assertIsNone(instance.gritlock_state)
         self.assertIsNone(instance._gritlock_settle_task)
 
     async def test_rfid_mqtt_state_cannot_confirm_a_rest_command(self):

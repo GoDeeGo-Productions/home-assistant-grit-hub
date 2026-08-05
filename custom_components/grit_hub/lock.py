@@ -44,14 +44,17 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
 
     @property
     def available(self) -> bool:
+        state = self.coordinator.gritlock_state
         return (
             self.coordinator.last_update_success
             and self.coordinator.mqtt_connected
+            and isinstance(state, bool)
         )
 
     @property
     def is_locked(self) -> bool | None:
-        return self.coordinator.gritlock_state
+        state = self.coordinator.gritlock_state
+        return state if isinstance(state, bool) else None
 
     async def async_lock(self, **kwargs) -> None:
         await self._async_set_gritlock(True)
