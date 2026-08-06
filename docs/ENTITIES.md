@@ -13,7 +13,7 @@ Forwarded platforms are `sensor`, `binary_sensor`, `switch`, `cover`, `button`,
 | --- | --- | --- | --- |
 | Gate | `cover` | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry | Newer matching MQTT observation after the pre-command boundary |
 | RFID reader | `lock` | Individual `GET /api/rfid/{id}` strict `state` | Newer matching individual REST generation |
-| GRITLock | `lock` | Bounded current-connection trigger `/sts` or `/tel` `gls` snapshot at startup, then settled `/gl` MQTT consensus | Fresh settled `/gl` MQTT generation |
+| GRITLock | `lock` | Latest immutable current-connection observation from startup status, settled live `/gl`, or disagreement | Matching fresh settled `live_gl` observation newer than the pre-command connection/sequence boundary |
 | Collector | `switch` | Individual collector detail, with proven MQTT supplementation | Newer online, settled matching individual REST detail |
 | Solenoid, latch, powerbank | `switch` | Existing collection/reconciliation implementation | Bounded full coordinator refresh; no collector contract is claimed |
 | System LED brightness | `number` | Sanitized hub REST field | Newer full hub refresh with matching value |
@@ -45,42 +45,45 @@ allowlisted diagnostics.
 ### GRITLock
 
 One system-wide `LockEntity` is created. `PUT /api/hub/lockout` receives
-`{"state": true}` for Lock and `{"state": false}` for Unlock. REST
-`gritLockEnabled` values may define participants, but REST `gritLockState` is
-not displayed because inventory freshness is unproven. Before MQTT authority
-settles, the entity is Unknown and unavailable.
+`{"state": true}` for Lock and `{"state": false}` for Unlock. The entity is
+never toggle-driven or optimistic. REST `gritLockState` is not displayed because
+inventory freshness is unproven.
 
-On startup or reconnect, exact MQTT readiness opens one bounded
-connection-scoped snapshot. Strict binary `gls` from trigger `/sts` or `/tel`
-may enter before or independently of an individual best-effort REST refresh;
-`/tel` without `gls` does not count. Nonempty complete REST participant
-metadata requires exactly that set. Otherwise, after a bounded quiet period,
-the unique known triggers that actually supplied valid `gls` define the safe
-fallback rather than every trigger in inventory. Unanimous one is Locked,
-unanimous zero is Unlocked, and complete disagreement produces Unknown.
-Insufficient evidence leaves state Unknown without erasing earlier valid
-authority. Startup status is not a `/gl` generation and cannot confirm a Lock
-or Unlock command.
+Displayed state derives from one latest immutable coordinator observation.
+Strict current-connection trigger `/sts` or `/tel` `gls` may hydrate that field
+at startup; `/tel` without `gls` does not count. Nonempty complete REST
+`gritLockEnabled` metadata can select startup participants only. Otherwise the
+bounded known triggers that actually report strict `gls` form the quiet-settled
+startup fallback. Unanimous one is Locked, unanimous zero is Unlocked, and
+complete disagreement is Unknown. Startup status is displayed-state authority
+only and cannot confirm Lock or Unlock.
 
-Exact `trigger/<id>/gl` messages provide live authority. `gls=1` means locked
-(`True`) and `gls=0` means unlocked (`False`); exact `False` is authority, not
-missing state. A nonempty, complete, valid REST `gritLockEnabled` set defines the
-required participants when available; an empty set does not identify
-participants and uses MQTT fallback. Otherwise each fresh quiet-settled
-generation uses exactly its `gte=1` trigger subset when at least one exists; an
-all-`gte=0` generation uses all of its fresh observed triggers. MQTT-derived
-participants are not carried into another generation. Every selected
-observation must agree on `gls`. Incomplete, overflowing, timed-out, replaced,
-or unsettled generations fail without erasing the last valid MQTT state. A
-complete disagreement explicitly invalidates authority and produces Unknown.
+Exact `trigger/<id>/gl` messages provide continuous live authority. Each bounded
+quiet-settled burst keeps only the latest valid observation per trigger. If any
+fresh observation has `gte=1`, exactly the fresh `gte=1` subset participates. If
+all fresh observations have `gte=0`, every fresh observed trigger participates,
+including a sparse one-frame burst. Every selected observation must agree:
+`gls=1` is locked (`True`), `gls=0` is unlocked (`False`), and exact `False` is
+authority, not missing state. Complete disagreement publishes Unknown.
+Malformed, incomplete, overflowing, or unsettled evidence preserves the last
+valid state. REST participant metadata cannot redefine an active live burst.
 
-A command opens a clean generation at the pre-command MQTT boundary and is
-confirmed only by its newer naturally settled generation. HTTP success and the
-currently displayed state are never enough, including for a no-op command. A
-valid settled result immediately notifies the entity, so Locked exposes Unlock
-and Unlocked exposes Lock without waiting for REST polling. Polling cannot
-overwrite that MQTT state. MQTT disconnect discards MQTT authority and makes
-the entity unavailable until a new valid generation settles.
+A command captures MQTT connection generation and receive sequence before the
+explicit REST desired-state request. It then waits against the same latest
+observation channel for a naturally settled `live_gl` observation supported
+entirely by sequences newer than the boundary. This accepts a matching frame
+that arrives while REST is still awaiting and avoids lost wakeups by checking
+before and after waiter registration. HTTP success, current displayed state,
+startup status, stale evidence, an opposite state, disagreement, timeout,
+disconnect, or reconnect cannot confirm. There are no command generation IDs or
+retained command-result map.
+
+No-op requests still send REST and require fresh matching live evidence.
+Confirmation failure preserves the last valid displayed state unless explicit
+disagreement or disconnect invalidates authority. A valid live observation
+notifies the entity once, so Locked exposes Unlock and Unlocked exposes Lock
+without waiting for REST polling. Unknown is unavailable. Gate and RFID entity
+semantics are unchanged by this GRITLock refactor.
 
 ### RFID reader
 

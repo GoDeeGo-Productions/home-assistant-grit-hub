@@ -7,31 +7,27 @@ versioning for public releases.
 
 ### Fixed
 
-- Corrected gate and GRITLock startup hydration after the exact MQTT
-  subscription becomes ready. Gates retain bounded per-request `/sts` or
-  `/tel` correlation and numeric-text `p` support. GRITLock now uses a separate
-  bounded current-connection snapshot: strict `/sts` or `/tel` `gls` may arrive
-  before or independently of best-effort REST refresh completion, `/tel`
-  without `gls` is ignored, and safe participant consensus remains isolated
-  from `/gl` command confirmation. Opening a command closes any unsettled
-  startup snapshot. Partial failures preserve valid authority.
-- Corrected the v0.1.1 GRITLock participant-selection regression for mixed
-  trigger generations. Valid REST participant metadata still takes precedence;
-  otherwise each fresh quiet-settled `/gl` generation uses exactly its `gte=1`
-  triggers when any are present, or all fresh observed triggers when none report
-  `gte=1`. `gls` remains authoritative and all existing fail-closed generation
-  rules remain in force.
-- Corrected the remaining GRITLock command-confirmation defect after PR #25:
-  a complete but empty REST participant set no longer suppresses the bounded
-  all-`gte=0` MQTT fallback. Explicit command generations replace stale active
-  evidence, settle only after the natural quiet period, publish the settled
-  state immediately, and never use timeout handling to settle partial input.
-- Corrected the end-to-end GRITLock state pipeline. Exact MQTT `gls=0` now
-  remains the authoritative unlocked state, valid state survives later
-  inconclusive generations and REST polling, complete MQTT disagreement clears
-  authority, and an Unknown GRITLock is unavailable. REST `gritLockEnabled`
-  remains participant metadata; REST `gritLockState` is not displayed because
-  its freshness is unproven.
+- Replaced the GRITLock command-owned generation IDs and retained result map with
+  one continuous immutable observed-state channel. Startup `/sts` or `/tel`
+  `gls` and naturally quiet-settled live `/gl` bursts now publish through the
+  same displayed-state authority; startup evidence remains ineligible for
+  command confirmation.
+- GRITLock Lock and Unlock now capture the MQTT connection generation and
+  receive sequence before sending the explicit desired-state REST request, then
+  wait for a matching newer `live_gl` observation on that same channel. A
+  matching observation received while REST is still awaiting is eligible,
+  while HTTP success, stale state, startup status, disconnect, disagreement,
+  and timeout fail closed.
+- Live `/gl` participant selection is based only on the current bounded burst:
+  use the fresh `gte=1` subset when nonempty, otherwise use every fresh observed
+  all-`gte=0` trigger. Sparse one-frame all-`gte=0` evidence is supported and
+  REST participant metadata cannot redefine an active live burst. Incomplete
+  evidence and command failure preserve the last valid state; complete
+  disagreement and disconnect invalidate it.
+- Preserved bounded current-connection GRITLock startup hydration: strict
+  `/sts` or `/tel` `gls` can establish displayed state, `/tel` without `gls` is
+  ignored, and reconnect rejects prior-connection evidence. Gate and RFID
+  behavior is unchanged.
 
 ## 0.1.1 — 2026-08-05
 

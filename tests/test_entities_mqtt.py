@@ -356,6 +356,7 @@ class FakeCoordinator:
         self.hub_update_sequence = 1
         self.gritlock_update_sequence = 1
         self.mqtt_receive_sequence = 0
+        self.mqtt_connection_generation = 1
         self.confirmation_hook: (
             Callable[[str, str, bool], bool] | None
         ) = None
@@ -372,10 +373,9 @@ class FakeCoordinator:
         ] = []
         self.gritlock_confirmation_hook: Callable[[bool], bool] | None = None
         self.gritlock_confirmation_block: asyncio.Event | None = None
-        self.gritlock_confirmation_calls: list[tuple[bool, int, float]] = []
-        self.gritlock_generation_sequence = 0
-        self.gritlock_generation_calls: list[int] = []
-        self.gritlock_cancel_calls: list[int] = []
+        self.gritlock_confirmation_calls: list[
+            tuple[bool, int, int, float]
+        ] = []
 
     @property
     def hub_data(self) -> dict[str, Any]:
@@ -588,27 +588,28 @@ class FakeCoordinator:
             and record.get("_grit_collector_state_changing") is False
             and record.get("_grit_collector_state") is expected
         )
-    def begin_gritlock_generation(self, after_sequence: int) -> int | None:
-        if not self.mqtt_connected or after_sequence != self.mqtt_receive_sequence:
-            return None
-        self.gritlock_generation_sequence += 1
-        self.gritlock_generation_calls.append(after_sequence)
-        return self.gritlock_generation_sequence
-
-    def cancel_gritlock_generation(self, generation_id: int) -> bool:
-        self.gritlock_cancel_calls.append(generation_id)
-        return True
-
-    async def async_confirm_gritlock_state(
+    async def async_wait_for_gritlock_state(
         self,
         expected: bool,
         *,
-        generation_id: int,
+        after_connection_generation: int,
+        after_receive_sequence: int,
         timeout: float,
     ) -> bool:
         self.gritlock_confirmation_calls.append(
-            (expected, generation_id, timeout)
+            (
+                expected,
+                after_connection_generation,
+                after_receive_sequence,
+                timeout,
+            )
         )
+        if (
+            not self.mqtt_connected
+            or after_connection_generation
+            != self.mqtt_connection_generation
+        ):
+            return False
         if self.gritlock_confirmation_block is not None:
             try:
                 await asyncio.wait_for(
@@ -621,12 +622,12 @@ class FakeCoordinator:
             return False
         self.mqtt_receive_sequence += 1
         return self.gritlock_confirmation_hook(expected)
-
     def set_mqtt_connected(self, connected: bool) -> bool:
 
         if self.mqtt_connected == connected:
             return False
         self.mqtt_connected = connected
+        self.mqtt_connection_generation += 1
         self.listener_updates += 1
         return True
 
@@ -1870,10 +1871,10 @@ class EntityMqttTests(unittest.TestCase):
         self.assertEqual(
             self.coordinator.gritlock_confirmation_calls,
             [
-                (True, 1, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
-                (True, 2, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
-                (False, 3, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
-                (True, 4, 0.01),
+                (True, 1, 0, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
+                (True, 1, 0, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
+                (False, 1, 1, LOCK_MODULE.HUB_CONFIRM_TIMEOUT),
+                (True, 1, 2, 0.01),
             ],
         )
 

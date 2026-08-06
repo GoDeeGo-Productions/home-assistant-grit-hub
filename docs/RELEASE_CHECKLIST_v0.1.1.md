@@ -20,6 +20,11 @@ published on 2026-08-05; v0.1.2 is not tagged or published.
 - [x] Exact merged PR #28 passed gate and RFID startup on Dion's installation
 - [x] Exact merged PR #28 left GRITLock Unknown despite unanimous current-connection `/sts gls=1`
 - [x] Strict per-request GRITLock startup correlation defect identified and corrected offline
+- [x] Command-generation architecture independently audited and rejected
+- [x] One continuous immutable GRITLock observed-state channel implemented offline
+- [x] Command generation IDs and retained command-result map removed
+- [x] Sparse one-frame all-`gte=0` Unlock and six-trigger all-`gte=0` behavior covered by deterministic tests
+- [x] Pre-REST connection/sequence boundary and lost-wakeup-safe waiting covered by deterministic tests
 - [ ] Corrective v0.1.2 GRITLock startup, Lock, Unlock, confirmation, and immediate entity state pass on both installations
 
 ## Corrective validation
@@ -44,8 +49,8 @@ published on 2026-08-05; v0.1.2 is not tagged or published.
 - [x] PR #28 Dion RFID startup/detail authority remained correct
 - [ ] Dion GRITLock startup `/sts gls=1` snapshot displays Locked and offers Unlock
 - [ ] Dion startup all-`gte=0`, `gls=0` displays Unlocked and offers Lock
-- [ ] Dion mixed `gte=1`, `gls=1` generation displays Locked and offers Unlock
-- [ ] Dion fresh all-`gte=0`, `gls=0` Unlock confirms and displays Unlocked
+- [ ] Dion mixed `gte=1`, `gls=1` live burst displays Locked and offers Unlock
+- [ ] Dion sparse fresh all-`gte=0`, `gls=0` Unlock confirms and displays Unlocked
 - [ ] No false confirmation toast for Lock or Unlock
 - [ ] Partial or missing startup responses leave only affected devices Unknown
 - [ ] No regression on gate, RFID, collector, LED, config flow, or MQTT lifecycle

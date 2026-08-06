@@ -102,11 +102,11 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("0.1.1 — 2026-08-05", changelog)
         self.assertIn(release_url, changelog)
         self.assertIn(
-            "Corrected the end-to-end GRITLock state pipeline",
+            "one continuous immutable observed-state channel",
             changelog,
         )
         self.assertIn(
-            "Corrected gate and GRITLock startup hydration",
+            "Preserved bounded current-connection GRITLock startup hydration",
             changelog,
         )
 
@@ -135,6 +135,10 @@ class DocumentationTests(unittest.TestCase):
             "current-connection `/sts gls=1`",
             "- [x] Strict per-request GRITLock startup correlation defect "
             "identified and corrected offline",
+            "- [x] One continuous immutable GRITLock observed-state channel "
+            "implemented offline",
+            "- [x] Command generation IDs and retained command-result map "
+            "removed",
         ):
             self.assertIn(evidence_item, checklist_v011)
         for pending_item in (
@@ -336,17 +340,16 @@ class DocumentationTests(unittest.TestCase):
         for expected in (
             "Gate | MQTT live state",
             "RFID | Strict individual `GET /api/rfid/{id}`",
-            "GRITLock | Bounded current-connection trigger `/sts`",
+            "GRITLock | One latest immutable observation",
             "Collector | Strict individual `GET /api/collector/{id}` detail",
             "Production code contains no MQTT publish path.",
             "`POST /api/device/mesh-telemetry/refresh/{type}/{id}`",
             "`/req-tel` cannot hydrate or alter a gate",
-            "cannot confirm Lock or Unlock",
-            "Opening a command generation closes any unsettled "
-            "startup snapshot",
+            "`startup_status` source cannot confirm a command",
+            "There are no command generation IDs, command-owned state model, "
+            "or retained command-result map",
         ):
             self.assertIn(expected, architecture_flat)
-
     def test_startup_hydration_sources_and_boundaries_are_documented(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         entities = (ROOT / "docs/ENTITIES.md").read_text(encoding="utf-8")
@@ -359,18 +362,19 @@ class DocumentationTests(unittest.TestCase):
             "exact runtime subscription is ready",
             "GRITLock instead opens one bounded",
             "`/tel` without `gls` is ignored",
+            "same displayed-state field",
             "The integration does not publish MQTT or operate equipment",
         ):
             self.assertIn(expected, readme_flat)
         for expected in (
             "assumption that a retained MQTT status exists",
-            "Startup status is not a `/gl` generation",
-            "Insufficient evidence leaves state Unknown",
+            "Startup status is displayed-state authority only",
+            "Malformed, incomplete, overflowing, or unsettled evidence "
+            "preserves the last valid state",
         ):
             self.assertIn(expected, entities_flat)
         self.assertIn("does not depend on a retained message", troubleshooting)
         self.assertIn("`/req-tel` only shows", troubleshooting)
-
     def test_gritlock_dual_participant_modes_are_documented(self) -> None:
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(
             encoding="utf-8"
@@ -379,27 +383,28 @@ class DocumentationTests(unittest.TestCase):
         troubleshooting = (ROOT / "docs/TROUBLESHOOTING.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("`gls` is the live lock state", architecture)
-        self.assertIn("REST `gritLockEnabled` participant set", architecture)
+        self.assertIn("one latest immutable GRITLock state observation", architecture)
+        self.assertIn("If one or more fresh observations have `gte=1`", architecture)
         self.assertIn(
-            "A complete REST list containing no enabled participant",
+            "every fresh observed trigger participates",
+            " ".join(architecture.split()),
+        )
+        self.assertIn("sparse valid one-frame burst", architecture)
+        self.assertIn(
+            "REST `gritLockEnabled` metadata does not mutate or redefine",
             architecture,
         )
-        self.assertIn("observations have `gte=1`", architecture)
-        self.assertIn("Timeout handling never settles active or", architecture)
         self.assertIn(
-            "MQTT-derived participants are not persisted",
-            architecture,
+            "`gls=0` is unlocked (`False`)",
+            " ".join(architecture.split()),
         )
-        self.assertIn("all-`gte=0` generation", entities)
-        self.assertIn("two firmware patterns are", troubleshooting)
-        self.assertIn("mixed burst uses exactly", troubleshooting)
-        self.assertIn("`gls=0` is unlocked (`False`)", architecture)
-        self.assertIn("exact `False` is authority, not", entities)
-        self.assertIn("entity is Unknown and unavailable", entities)
-        self.assertIn("fails that generation without erasing", troubleshooting)
+        self.assertIn("exact `False` is authority, not", " ".join(entities.split()))
+        self.assertIn("including a sparse one-frame burst", entities)
+        self.assertIn("all-`gte=0` burst uses all fresh", troubleshooting)
+        self.assertIn("mixed burst uses exactly", " ".join(troubleshooting.split()))
+        self.assertIn("preserves an earlier valid state", troubleshooting)
+        self.assertIn("No-op requests still send REST", entities)
         self.assertNotIn("provisional REST startup state", entities)
-
     def test_mqtt_topic_scopes_and_safe_diagnostic_command_are_accurate(self) -> None:
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(
             encoding="utf-8"

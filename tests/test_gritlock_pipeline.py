@@ -23,9 +23,12 @@ class PipelineApi(coordinator_tests.FakeApi):
         super().__init__(collections)
         self.gritlock_calls: list[bool] = []
         self.command_hook: Callable[[bool], None] | None = None
+        self.command_error = False
 
     async def set_gritlock(self, locked: bool) -> None:
         self.gritlock_calls.append(locked)
+        if self.command_error:
+            raise RuntimeError("fabricated command failure")
         if self.command_hook is not None:
             self.command_hook(locked)
 
@@ -226,16 +229,8 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(entity.is_locked)
 
-        api.command_hook = lambda _locked: self.emit(
-            instance,
-            (("trigger-one", 1, 1),),
-        )
         with (
-            mock.patch.object(
-                coordinator_module,
-                "_GRITLOCK_SETTLE_TIME",
-                0.001,
-            ),
+            mock.patch.object(LOCK_MODULE, "HUB_CONFIRM_TIMEOUT", 0.01),
             self.assertRaisesRegex(
                 entity_tests.HomeAssistantError,
                 "could not be confirmed",
@@ -273,6 +268,112 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(entity.is_locked)
         self.assertTrue(entity.available)
 
+    async def test_noop_with_fresh_matching_observation_confirms(self):
+        devices = coordinator_tests._device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": False}
+        ]
+        api = PipelineApi()
+        instance = self.coordinator(devices, api)
+        instance.set_mqtt_connected(True)
+        entity = LOCK_MODULE.GritHubSystemLock(instance)
+        await self.settle(instance, (("trigger-one", 0, 1),))
+        self.assertIs(entity.is_locked, True)
+
+        api.command_hook = lambda _locked: self.emit(
+            instance,
+            (("trigger-one", 0, 1),),
+        )
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_SETTLE_TIME",
+            0.001,
+        ):
+            await entity.async_lock()
+
+        self.assertEqual(api.gritlock_calls, [True])
+        self.assertIs(entity.is_locked, True)
+
+    async def test_fresh_opposite_observation_fails_and_is_displayed(self):
+        devices = coordinator_tests._device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": False}
+        ]
+        api = PipelineApi()
+        instance = self.coordinator(devices, api)
+        instance.set_mqtt_connected(True)
+        entity = LOCK_MODULE.GritHubSystemLock(instance)
+        await self.settle(instance, (("trigger-one", 0, 1),))
+
+        api.command_hook = lambda _locked: self.emit(
+            instance,
+            (("trigger-one", 0, 0),),
+        )
+        with (
+            mock.patch.object(
+                coordinator_module,
+                "_GRITLOCK_SETTLE_TIME",
+                0.001,
+            ),
+            self.assertRaisesRegex(
+                entity_tests.HomeAssistantError,
+                "could not be confirmed",
+            ),
+        ):
+            await entity.async_lock()
+
+        self.assertEqual(api.gritlock_calls, [True])
+        self.assertIs(entity.is_locked, False)
+        self.assertTrue(entity.available)
+
+    async def test_rest_failure_preserves_observed_state(self):
+        devices = coordinator_tests._device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": False}
+        ]
+        api = PipelineApi()
+        instance = self.coordinator(devices, api)
+        instance.set_mqtt_connected(True)
+        entity = LOCK_MODULE.GritHubSystemLock(instance)
+        await self.settle(instance, (("trigger-one", 0, 0),))
+        observation = instance._gritlock_state_observation
+        api.command_error = True
+
+        with self.assertRaisesRegex(
+            entity_tests.HomeAssistantError,
+            "could not be confirmed",
+        ):
+            await entity.async_lock()
+
+        self.assertEqual(api.gritlock_calls, [True])
+        self.assertIs(instance._gritlock_state_observation, observation)
+        self.assertIs(entity.is_locked, False)
+
+    async def test_entity_command_cancellation_propagates(self):
+        devices = coordinator_tests._device_map()
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": False}
+        ]
+        api = PipelineApi()
+        instance = self.coordinator(devices, api)
+        instance.set_mqtt_connected(True)
+        entity = LOCK_MODULE.GritHubSystemLock(instance)
+        await self.settle(instance, (("trigger-one", 0, 0),))
+        observation = instance._gritlock_state_observation
+
+        command = asyncio.create_task(entity.async_lock())
+        for _attempt in range(20):
+            if instance._mqtt_state_waiters:
+                break
+            await asyncio.sleep(0)
+        self.assertTrue(instance._mqtt_state_waiters)
+        command.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await command
+
+        self.assertEqual(api.gritlock_calls, [True])
+        self.assertIs(instance._gritlock_state_observation, observation)
+        self.assertEqual(instance._mqtt_state_waiters, set())
     async def test_rest_refresh_cannot_replace_settled_unlocked_state(self):
         devices = coordinator_tests._device_map()
         devices["trigger"] = [
