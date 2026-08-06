@@ -96,8 +96,11 @@ state rather than inventing one. The default poll is a 30-second fallback.
 GRITLock has one continuous observed-state channel. Exact `gls=1` is Locked,
 `gls=0` is Unlocked, and zero is not treated as missing. At startup or reconnect,
 a bounded current-connection snapshot accepts strict trigger `/sts` or `/tel`
-`gls`; `/tel` without `gls` is ignored. Startup status can display state but
-cannot confirm a later command.
+`gls`; trigger messages without `gls` are ignored and cannot block hydration.
+A complete REST participant set is exact only when fully represented by current
+`gls`. Otherwise, bounded observed reporters are evaluated after 250 ms quiet
+instead of waiting for the full five-second window. Startup status can display
+state but cannot confirm a later command.
 
 Live `/gl` bursts choose participants only from their fresh frames. A mixed
 burst uses exactly the fresh `gte=1` subset. An all-`gte=0` burst uses all fresh

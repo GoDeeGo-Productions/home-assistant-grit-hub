@@ -1972,21 +1972,23 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             return False
 
-        if snapshot.rest_participants_usable:
+        current_time = time.monotonic() if now is None else now
+        if (
+            not snapshot.observations
+            or snapshot.last_received_monotonic is None
+            or current_time - snapshot.last_received_monotonic
+            < _GRITLOCK_STARTUP_QUIET_TIME
+        ):
+            return False
+
+        if snapshot.rest_participants_usable and (
+            snapshot.rest_participants.issubset(snapshot.observations)
+        ):
             participants = snapshot.rest_participants
-            if not participants.issubset(snapshot.observations):
-                return False
-        else:
-            current_time = time.monotonic() if now is None else now
-            if (
-                not snapshot.fallback_usable
-                or not snapshot.observations
-                or snapshot.last_received_monotonic is None
-                or current_time - snapshot.last_received_monotonic
-                < _GRITLOCK_STARTUP_QUIET_TIME
-            ):
-                return False
+        elif snapshot.fallback_usable:
             participants = frozenset(snapshot.observations)
+        else:
+            return False
 
         states = {
             snapshot.observations[trigger_id][0]
@@ -2033,10 +2035,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         locked = _strict_binary_bool(payload.get("gls", _INVALID))
         if locked is _INVALID:
             return False
-        if snapshot.rest_participants_usable:
-            if device_id not in snapshot.rest_participants:
-                return False
-        elif (
+        if device_id not in snapshot.rest_participants and (
             not snapshot.fallback_usable
             or device_id not in snapshot.fallback_candidates
         ):
@@ -2085,10 +2084,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     timed_out = True
                     return
                 wait_timeout = remaining
-                if (
-                    not snapshot.rest_participants_usable
-                    and snapshot.last_received_monotonic is not None
-                ):
+                if snapshot.last_received_monotonic is not None:
                     quiet_remaining = _GRITLOCK_STARTUP_QUIET_TIME - (
                         current_time - snapshot.last_received_monotonic
                     )
@@ -2813,15 +2809,6 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if gritlock_startup_accepted:
                 self._mqtt_receive_sequence = receive_sequence
-                snapshot = self._gritlock_startup_snapshot
-                if (
-                    snapshot is not None
-                    and snapshot.rest_participants_usable
-                    and snapshot.rest_participants.issubset(
-                        snapshot.observations
-                    )
-                ):
-                    self._settle_gritlock_startup_snapshot(snapshot)
 
         sequence_present, source_sequence = _ordering_value(
             payload,

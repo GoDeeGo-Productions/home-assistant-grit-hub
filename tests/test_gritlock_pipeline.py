@@ -127,40 +127,63 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
             {"id": "trigger-one", "gritLockEnabled": False},
             {"id": "trigger-two", "gritLockEnabled": False},
             {"id": "trigger-three", "gritLockEnabled": False},
+            {"id": "trigger-switch", "gritLockEnabled": False},
         ]
         api = PipelineApi()
         instance = self.coordinator(devices, api)
-        instance.set_mqtt_connected(True)
-        entity = LOCK_MODULE.GritHubSystemLock(instance)
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_STARTUP_QUIET_TIME",
+            0.001,
+        ):
+            instance.set_mqtt_connected(True)
+            entity = LOCK_MODULE.GritHubSystemLock(instance)
+            for trigger_id in (
+                "trigger-one",
+                "trigger-two",
+                "trigger-three",
+            ):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "sts",
+                        {"gls": 0},
+                    )
+                )
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "trigger",
+                "trigger-switch",
+                "sts",
+                {"sts": 1},
+            )
+            startup_task = instance._gritlock_startup_task
+            self.assertIsNotNone(startup_task)
+            await asyncio.wait_for(startup_task, timeout=1)
 
-        await self.settle(
-            instance,
-            (
-                ("trigger-one", 0, 0),
-                ("trigger-two", 0, 0),
-            ),
-        )
         self.assertFalse(instance.gritlock_state)
         self.assertFalse(entity.is_locked)
         self.assertTrue(entity.available)
-
-        await self.settle(
-            instance,
-            (
-                ("trigger-one", 1, 1),
-                ("trigger-two", 1, 1),
-                ("trigger-three", 0, 0),
-            ),
+        self.assertEqual(
+            instance._gritlock_state_observation.source,
+            coordinator_module._GRITLOCK_SOURCE_STARTUP,
         )
-        self.assertTrue(instance.gritlock_state)
-        self.assertTrue(entity.is_locked)
 
-        api.command_hook = lambda _locked: self.emit(
+        locked_frames = (
+            ("trigger-one", 1, 1),
+            ("trigger-two", 1, 1),
+            ("trigger-three", 0, 0),
+        )
+        unlocked_frames = (
+            ("trigger-one", 0, 0),
+            ("trigger-two", 0, 0),
+            ("trigger-three", 0, 0),
+        )
+        api.command_hook = lambda locked: self.emit(
             instance,
-            (
-                ("trigger-one", 0, 0),
-                ("trigger-two", 0, 0),
-            ),
+            locked_frames if locked else unlocked_frames,
         )
         listener_updates = instance.listener_updates
         with mock.patch.object(
@@ -168,9 +191,12 @@ class GritlockPipelineTests(unittest.IsolatedAsyncioTestCase):
             "_GRITLOCK_SETTLE_TIME",
             0.001,
         ):
+            await entity.async_lock()
+            self.assertTrue(instance.gritlock_state)
+            self.assertTrue(entity.is_locked)
             await entity.async_unlock()
 
-        self.assertEqual(api.gritlock_calls, [False])
+        self.assertEqual(api.gritlock_calls, [True, False])
         self.assertFalse(instance.gritlock_state)
         self.assertFalse(entity.is_locked)
         self.assertTrue(entity.available)

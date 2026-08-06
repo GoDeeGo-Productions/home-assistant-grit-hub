@@ -172,10 +172,14 @@ connection-scoped status snapshot. Exact binary `gls` from trigger `/sts` or
 MQTT readiness and the current connection generation define the boundary.
 `/tel` without `gls`, invalid values, pre-readiness observations, and prior-
 connection evidence are ignored. A nonempty complete REST
-`gritLockEnabled=true` set selects startup participants only. If that metadata
-is empty or unusable, the bounded unique known triggers that actually report
-valid `gls` form the quiet-settled startup fallback. Startup consensus publishes
-through the same latest-observation field as live `/gl`, but its
+`gritLockEnabled=true` set selects startup participants only when every member
+is represented by current valid `gls`. If that metadata is empty, unusable, or
+not fully represented, the latest valid observations from at most 64 bounded
+unique known reporters form the startup fallback. Messages without `gls` do not
+enter or delay the snapshot. Every valid observation restarts one 250 ms quiet
+boundary; unanimous or disagreeing evidence then publishes before the five-
+second window expires. Startup consensus publishes through the same latest-
+observation field as live `/gl`, but its
 `startup_status` source cannot confirm a command.
 
 ### GRITLock commands and freshness

@@ -52,11 +52,13 @@ inventory freshness is unproven.
 Displayed state derives from one latest immutable coordinator observation.
 Strict current-connection trigger `/sts` or `/tel` `gls` may hydrate that field
 at startup; `/tel` without `gls` does not count. Nonempty complete REST
-`gritLockEnabled` metadata can select startup participants only. Otherwise the
-bounded known triggers that actually report strict `gls` form the quiet-settled
-startup fallback. Unanimous one is Locked, unanimous zero is Unlocked, and
-complete disagreement is Unknown. Startup status is displayed-state authority
-only and cannot confirm Lock or Unlock.
+`gritLockEnabled` metadata selects startup participants only when the complete
+nonempty set is fully represented by current strict `gls`. Empty, invalid, or
+not-fully-represented metadata falls back to the bounded observed reporters.
+Messages without `gls` are ignored. After 250 ms quiet, unanimous one is Locked,
+unanimous zero is Unlocked, and disagreement is Unknown; valid evidence need not
+wait for the full five-second window. Startup status is displayed-state
+authority only and cannot confirm Lock or Unlock.
 
 Exact `trigger/<id>/gl` messages provide continuous live authority. Each bounded
 quiet-settled burst keeps only the latest valid observation per trigger. If any
