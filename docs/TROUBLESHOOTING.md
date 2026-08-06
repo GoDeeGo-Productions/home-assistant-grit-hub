@@ -120,10 +120,10 @@ fresh evidence; there are no command generation IDs or retained result map.
 
 If physical equipment changes but Home Assistant reports failed confirmation,
 do not repeat the command. Verify the site safely and retain only redacted logs.
-For v0.1.2, GRITLock startup, Lock, Unlock, confirmation, and immediate state
-remain blocked pending live acceptance on Dion's and Jeff's systems. Gate and
-RFID behavior was not changed by this refactor and must remain green during that
-acceptance.
+v0.1.2 passed GRITLock startup, Lock, Unlock, confirmation, gate, and RFID live
+acceptance on both tested systems. An occasional missed individual downstream
+trigger after a hub-level change remains a separate propagation-reliability
+issue; verify the physical site safely rather than assuming per-trigger delivery.
 
 ## Collector command waits or fails
 

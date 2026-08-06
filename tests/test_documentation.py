@@ -27,8 +27,10 @@ REQUIRED_FILES = (
     "docs/TROUBLESHOOTING.md",
     "docs/ACCEPTANCE_REPORT_v0.1.0.md",
     "docs/ACCEPTANCE_REPORT_v0.1.1.md",
+    "docs/ACCEPTANCE_REPORT_v0.1.2.md",
     "docs/RELEASE_CHECKLIST.md",
     "docs/RELEASE_CHECKLIST_v0.1.1.md",
+    "docs/RELEASE_CHECKLIST_v0.1.2.md",
     "docs/REPOSITORY_TRANSFER.md",
     "docs/REPOSITORY_METADATA.md",
 )
@@ -82,93 +84,96 @@ class DocumentationTests(unittest.TestCase):
         acceptance_v011 = (
             ROOT / "docs/ACCEPTANCE_REPORT_v0.1.1.md"
         ).read_text(encoding="utf-8")
+        acceptance_v012 = (
+            ROOT / "docs/ACCEPTANCE_REPORT_v0.1.2.md"
+        ).read_text(encoding="utf-8")
+        acceptance_v012_flat = " ".join(acceptance_v012.split())
         checklist_v011 = (
             ROOT / "docs/RELEASE_CHECKLIST_v0.1.1.md"
+        ).read_text(encoding="utf-8")
+        checklist_v012 = (
+            ROOT / "docs/RELEASE_CHECKLIST_v0.1.2.md"
         ).read_text(encoding="utf-8")
         release_url = (
             "https://github.com/GoDeeGo-Productions/"
             "home-assistant-grit-hub/releases/tag/v0.1.1"
         )
+        accepted_commit = "52d94f64a8ac570f187ffa4428d61a3db7163cf7"
 
-        self.assertEqual(manifest["version"], "0.1.1")
+        self.assertEqual(manifest["version"], "0.1.2")
         self.assertIn(
-            "a `v0.1.2` corrective patch candidate is in development",
+            "`v0.1.2` is the latest prepared release and is ready for "
+            "publication after successful two-system live acceptance",
             readme_flat,
         )
-        self.assertIn("The `v0.1.1` release was published", readme_flat)
-        self.assertIn("remains the latest published release", readme_flat)
+        self.assertIn("It is not yet tagged or published", readme_flat)
+        self.assertIn("published `v0.1.1` release is superseded", readme_flat)
+        self.assertIn("remains a HACS Custom Repository", readme_flat)
         self.assertIn(release_url, readme)
-        self.assertIn("0.1.0 — 2026-08-04", changelog)
-        self.assertIn("0.1.1 — 2026-08-05", changelog)
-        self.assertIn(release_url, changelog)
-        self.assertIn(
+
+        self.assertIn("## 0.1.2 — 2026-08-06", changelog)
+        self.assertNotIn("## Unreleased", changelog)
+        for expected in (
             "one continuous immutable observed-state channel",
-            changelog,
+            "fresh matching post-command `/gl` observation",
+            "Dion's mixed `gte=1` Lock",
+            "Jeff's all-`gte=0` Lock and Unlock pattern",
+            "Preserved gate startup hydration and RFID startup/detail authority",
+        ):
+            self.assertIn(expected, changelog)
+
+        self.assertIn(accepted_commit, acceptance_v012)
+        self.assertIn("## Dion installation acceptance", acceptance_v012)
+        self.assertIn("## Jeff installation acceptance", acceptance_v012)
+        self.assertIn("406 unit tests passed", acceptance_v012)
+        self.assertIn(
+            "1 optional real-Paho smoke test was skipped as expected",
+            acceptance_v012,
+        )
+        self.assertIn("HACS validation passed", acceptance_v012)
+        self.assertIn("Hassfest validation passed", acceptance_v012)
+        self.assertIn("manifest is prepared at version `0.1.2`", acceptance_v012)
+        self.assertIn(
+            "separate propagation-reliability issue",
+            acceptance_v012_flat,
         )
         self.assertIn(
-            "Corrected bounded current-connection GRITLock startup promotion",
-            changelog,
+            "no `v0.1.2` tag or GitHub release exists yet",
+            acceptance_v012_flat,
         )
 
-        acceptance_flat = " ".join(acceptance_v011.split())
+        self.assertIn("Manifest version is exactly `0.1.2`", checklist_v012)
         self.assertIn(
-            "Published v0.1.1 is superseded; v0.1.2 remains blocked "
-            "pending live acceptance on Dion's and Jeff's installations.",
-            acceptance_flat,
+            "- [ ] Working tree clean at the final release commit",
+            checklist_v012,
         )
-        for evidence_item in (
-            "- [x] All-`gte=0` Lock and Unlock passed on Jeff's installation",
-            "- [x] Mixed-`gte` participant regression reproduced on Dion's "
-            "installation",
-            "- [x] PR #26 corrected command-generation settlement",
-            "- [x] Exact merged PR #26 build reproduced wrong startup and "
-            "post-command state on Dion's installation",
-            "- [x] End-to-end state-pipeline cause identified and corrected "
-            "offline",
-            "- [x] Exact merged `9cd5807` build reproduced Unknown gate and "
-            "GRITLock startup while RFID hydrated",
-            "- [x] Bounded post-SUBACK request/response hydration implemented "
-            "and tested offline",
-            "- [x] Exact merged PR #28 passed gate and RFID startup on Dion's "
-            "installation",
-            "- [x] Exact merged PR #28 left GRITLock Unknown despite unanimous "
-            "current-connection `/sts gls=1`",
-            "- [x] Strict per-request GRITLock startup correlation defect "
-            "identified and corrected offline",
-            "- [x] One continuous immutable GRITLock observed-state channel "
-            "implemented offline",
-            "- [x] Command generation IDs and retained command-result map "
-            "removed",
-            "- [x] REST-set incompleteness, unreachable fallback, and disabled "
-            "quiet wakeup identified as the startup cause",
-            "- [x] Bounded observed-reporter startup fallback and common 250 ms "
-            "quiet settlement implemented offline",
-            "- [x] Deterministic Jeff Locked/Unlocked startup and Dion startup/"
-            "command regressions added",
-        ):
-            self.assertIn(evidence_item, checklist_v011)
+        self.assertIn("- [x] HACS validation passed", checklist_v012)
+        self.assertIn("- [x] Hassfest validation passed", checklist_v012)
         for pending_item in (
-            "- [ ] Corrective v0.1.2 GRITLock startup, Lock, Unlock, "
-            "confirmation, and immediate entity state pass on both "
-            "installations",
-            "- [ ] HACS validation green for the corrective branch",
-            "- [ ] Hassfest validation green for the corrective branch",
-            "- [ ] Jeff GRITLock Lock succeeds with all-`gte=0`, `gls=1`",
-            "- [ ] Jeff GRITLock Unlock succeeds with all-`gte=0`, `gls=0`",
-            "- [ ] Dion startup all-`gte=0`, `gls=0` displays Unlocked and "
-            "offers Lock",
-            "- [ ] Jeff gate startup state hydrates from fresh requested MQTT "
-            "status",
-            "- [ ] Dion GRITLock startup `/sts gls=1` snapshot displays "
-            "Locked and offers Unlock",
-            "- [ ] Tag `v0.1.2` created",
-            "- [ ] GitHub release v0.1.2 created",
-            "- [ ] Final HACS install completed from published `v0.1.2`",
+            "- [ ] Final release commit selected and verified",
+            "- [ ] `v0.1.2` tag pushed to the configured origin",
+            "- [ ] GitHub release `v0.1.2` created",
+            "- [ ] Post-release HACS Custom Repository install/update verified",
+            "- [ ] Final corrective issue closeout completed",
         ):
-            self.assertIn(pending_item, checklist_v011)
-        self.assertNotIn("0.1.2 — 2026-", changelog)
-        self.assertNotIn("- [x] Tag `v0.1.2` created", checklist_v011)
-        self.assertNotIn("- [x] GitHub release v0.1.2 created", checklist_v011)
+            self.assertIn(pending_item, checklist_v012)
+
+        self.assertIn("published but superseded", checklist_v011)
+        self.assertIn("ACCEPTANCE_REPORT_v0.1.2.md", acceptance_v011)
+        self.assertIn("RELEASE_CHECKLIST_v0.1.2.md", acceptance_v011)
+        self.assertIn("52d94f64a8ac570f187ffa4428d61a3db7163cf7", checklist_v011)
+
+        combined = "\n".join(
+            (readme, changelog, acceptance_v011, acceptance_v012, checklist_v012)
+        )
+        for false_claim in (
+            "v0.1.2 was published",
+            "v0.1.2 has been published",
+            "- [x] `v0.1.2` tag pushed",
+            "- [x] GitHub release `v0.1.2` created",
+            "releases/tag/v0.1.2",
+        ):
+            self.assertNotIn(false_claim, combined)
 
     def test_published_release_and_remaining_decisions_are_consistent(
         self,

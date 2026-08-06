@@ -112,8 +112,8 @@ accepted live `/gl` frame closes any unsettled startup snapshot.
 ## v0.1.2 observed-state refactor
 
 The architectural audit concluded that displayed state and command confirmation
-must not use separate authority structures. The v0.1.2 candidate now retains one
-latest immutable GRITLock observation containing state, MQTT connection
+must not use separate authority structures. The corrective v0.1.2 implementation
+retained one latest immutable GRITLock observation containing state, MQTT connection
 generation, first and last supporting receive sequence, bounded source, and at
 most 64 participant IDs. Startup status and live `/gl` consensus publish through
 that same displayed-state field. Command generation IDs, retained generation
@@ -172,7 +172,7 @@ startup status, stale evidence, opposite state, disagreement, disconnect,
 reconnect, timeout, and cancellation all fail closed. No-op commands still send
 REST and require fresh matching evidence.
 
-Both installations require explicit GRITLock startup, Lock, Unlock,
+Both installations therefore required explicit GRITLock startup, Lock, Unlock,
 confirmation, and immediate entity-state retesting before v0.1.2 publication.
 Gate and RFID architecture and behavior were not changed by this refactor. The
 original boundedness, privacy, cancellation, disconnect, overflow, timeout, and
@@ -193,7 +193,7 @@ do not make the superseded candidate acceptable for publication.
 
 ## Current corrective automated validation
 
-The v0.1.2 candidate, including the Jeff startup-promotion correction, was
+The corrective implementation, including the Jeff startup-promotion fix, was
 validated without API, MQTT, Home Assistant, network, or physical-device access:
 
 - 10 end-to-end GRITLock parser/coordinator/entity pipeline tests passed.
@@ -206,17 +206,20 @@ validated without API, MQTT, Home Assistant, network, or physical-device access:
 - 3 tracked JSON files and 7 tracked YAML files parsed successfully.
 - `git diff --check` and the sensitive-value scan passed.
 
-These automated results do not replace the required Lock and Unlock acceptance
-on both live systems.
+Those automated results were later supplemented by successful two-system live
+acceptance on exact merged commit
+`52d94f64a8ac570f187ffa4428d61a3db7163cf7`.
+
 ## Publication state
 
-`v0.1.1` was published on 2026-08-05 and is the latest published release. The
-manifest remains at `0.1.1`; no `v0.1.2` tag, release, or publication is claimed.
-The corrective patch remains blocked until both systems pass live startup,
-Lock, Unlock, confirmation, and immediate-state acceptance.
+`v0.1.1` was published on 2026-08-05 and remains a historical, superseded
+release. The corrective v0.1.2 release is now prepared at manifest version
+`0.1.2` after successful Dion and Jeff live acceptance, but no `v0.1.2` tag or
+GitHub release exists yet.
 
-**Acceptance status:** Published v0.1.1 is superseded; v0.1.2 remains blocked
-pending live acceptance on Dion's and Jeff's installations.
+**Acceptance status:** Published v0.1.1 is superseded by the accepted and prepared
+v0.1.2 corrective release.
 
-See the [v0.1.1 release checklist](RELEASE_CHECKLIST_v0.1.1.md) and the
+See the [v0.1.2 acceptance report](ACCEPTANCE_REPORT_v0.1.2.md), the
+[v0.1.2 release checklist](RELEASE_CHECKLIST_v0.1.2.md), and the
 [historical v0.1.0 acceptance report](ACCEPTANCE_REPORT_v0.1.0.md).

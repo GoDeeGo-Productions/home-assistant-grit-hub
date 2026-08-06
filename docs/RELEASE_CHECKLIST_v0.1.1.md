@@ -1,8 +1,9 @@
 # v0.1.1 patch-release checklist
 
 This checklist records the published but superseded GRITLock `gte=0`
-compatibility patch and the remaining v0.1.2 corrective gates. `v0.1.1` was
-published on 2026-08-05; v0.1.2 is not tagged or published.
+compatibility patch and the historical v0.1.2 corrective handoff. `v0.1.1` was
+published on 2026-08-05; v0.1.2 is prepared after successful acceptance but is
+not tagged or published.
 
 ## Supersession evidence
 
@@ -30,45 +31,37 @@ published on 2026-08-05; v0.1.2 is not tagged or published.
 - [x] Jeff restart evidence reduced to four unanimous `/sts gls=1` reporters plus one no-`gls` switch message
 - [x] REST-set incompleteness, unreachable fallback, and disabled quiet wakeup identified as the startup cause
 - [x] Bounded observed-reporter startup fallback and common 250 ms quiet settlement implemented offline
-- [x] Deterministic Jeff Locked/Unlocked startup and Dion startup/command regressions added- [ ] Corrective v0.1.2 GRITLock startup, Lock, Unlock, confirmation, and immediate entity state pass on both installations
+- [x] Deterministic Jeff Locked/Unlocked startup and Dion startup/command regressions added
+- [x] Exact merged `52d94f6` passed final GRITLock startup, Lock, Unlock, confirmation, gate, and RFID acceptance on both installations
 
 ## Corrective validation
 
-- [x] Manifest remains `0.1.1`
+- [x] Historical v0.1.1 release manifest was `0.1.1`
 - [x] Complete local unit suite green
-- [ ] HACS validation green for the corrective branch
-- [ ] Hassfest validation green for the corrective branch
+- [x] HACS validation green
+- [x] Hassfest validation green
 - [x] Changelog, architecture, entity, troubleshooting, and acceptance documentation updated
 - [x] Sensitive-value scan clean
 - [x] `git diff --check` clean
 
-## Required v0.1.2 live acceptance
+## v0.1.2 acceptance handoff
 
-- [ ] Clean corrected build installed on Jeff's system
-- [ ] Jeff gate startup state hydrates from fresh requested MQTT status
-- [ ] Jeff GRITLock startup state hydrates from fresh requested trigger status
-- [ ] Jeff GRITLock Lock succeeds with all-`gte=0`, `gls=1`
-- [ ] Jeff GRITLock Unlock succeeds with all-`gte=0`, `gls=0`
-- [ ] Clean corrected build installed on Dion's system
-- [x] PR #28 Dion gate startup state hydrated for every responding gate
-- [x] PR #28 Dion RFID startup/detail authority remained correct
-- [ ] Dion GRITLock startup `/sts gls=1` snapshot displays Locked and offers Unlock
-- [ ] Dion startup all-`gte=0`, `gls=0` displays Unlocked and offers Lock
-- [ ] Dion mixed `gte=1`, `gls=1` live burst displays Locked and offers Unlock
-- [ ] Dion sparse fresh all-`gte=0`, `gls=0` Unlock confirms and displays Unlocked
-- [ ] No false confirmation toast for Lock or Unlock
-- [ ] Partial or missing startup responses leave only affected devices Unknown
-- [ ] No regression on gate, RFID, collector, LED, config flow, or MQTT lifecycle
+- [x] Exact merged commit `52d94f64a8ac570f187ffa4428d61a3db7163cf7` accepted
+- [x] Dion GRITLock startup, Lock, Unlock, confirmation, gates, and RFID passed
+- [x] Jeff GRITLock startup, Lock, Unlock, confirmation, gates, and other entities passed
+- [x] No confirmation errors observed during final two-system acceptance
+- [x] Separate downstream-trigger propagation issue excluded from v0.1.2 scope
 
-## Publication history and next release
+See the [v0.1.2 acceptance report](ACCEPTANCE_REPORT_v0.1.2.md) and
+[v0.1.2 release checklist](RELEASE_CHECKLIST_v0.1.2.md) for the final accepted
+evidence and remaining publication mechanics.
+
+## Publication history
 
 - [x] v0.1.1 tag and release recorded as published on 2026-08-05
 - [x] v0.1.1 release notes published
-- [ ] Final v0.1.2 release commit selected
-- [ ] Tag `v0.1.2` created
-- [ ] GitHub release v0.1.2 created
-- [ ] v0.1.2 release notes published
-- [ ] Final HACS install completed from published `v0.1.2`
+- [x] v0.1.1 recorded as superseded by the prepared v0.1.2 corrective release
+- [ ] v0.1.2 tag and GitHub release remain pending in the separate v0.1.2 checklist
 
-See the [v0.1.1 acceptance report](ACCEPTANCE_REPORT_v0.1.1.md). The original
-[v0.1.0 release checklist](RELEASE_CHECKLIST.md) remains historical evidence.
+The original [v0.1.0 release checklist](RELEASE_CHECKLIST.md) remains historical
+evidence.
