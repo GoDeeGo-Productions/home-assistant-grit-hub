@@ -13,7 +13,7 @@ Forwarded platforms are `sensor`, `binary_sensor`, `switch`, `cover`, `button`,
 | --- | --- | --- | --- |
 | Gate | `cover` | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry | Newer matching MQTT observation after the pre-command boundary |
 | RFID reader | `lock` | Individual `GET /api/rfid/{id}` strict `state` | Newer matching individual REST generation |
-| GRITLock | `lock` | Fresh unanimous requested trigger `/sts` or `/tel` at startup, then settled `/gl` MQTT consensus | Fresh settled `/gl` MQTT generation |
+| GRITLock | `lock` | Bounded current-connection trigger `/sts` or `/tel` `gls` snapshot at startup, then settled `/gl` MQTT consensus | Fresh settled `/gl` MQTT generation |
 | Collector | `switch` | Individual collector detail, with proven MQTT supplementation | Newer online, settled matching individual REST detail |
 | Solenoid, latch, powerbank | `switch` | Existing collection/reconciliation implementation | Bounded full coordinator refresh; no collector contract is claimed |
 | System LED brightness | `number` | Sanitized hub REST field | Newer full hub refresh with matching value |
@@ -50,12 +50,17 @@ One system-wide `LockEntity` is created. `PUT /api/hub/lockout` receives
 not displayed because inventory freshness is unproven. Before MQTT authority
 settles, the entity is Unknown and unavailable.
 
-On startup or reconnect, the integration requests current telemetry for each
-eligible trigger only after exact MQTT readiness. A complete unanimous set of
-fresh requested `/sts` or `/tel` responses with exact binary `gls` hydrates the
-system lock. Missing, invalid, contradictory, stale, or pre-request input leaves
-authority Unknown. Startup status is not a `/gl` generation and cannot confirm
-a Lock or Unlock command.
+On startup or reconnect, exact MQTT readiness opens one bounded
+connection-scoped snapshot. Strict binary `gls` from trigger `/sts` or `/tel`
+may enter before or independently of an individual best-effort REST refresh;
+`/tel` without `gls` does not count. Nonempty complete REST participant
+metadata requires exactly that set. Otherwise, after a bounded quiet period,
+the unique known triggers that actually supplied valid `gls` define the safe
+fallback rather than every trigger in inventory. Unanimous one is Locked,
+unanimous zero is Unlocked, and complete disagreement produces Unknown.
+Insufficient evidence leaves state Unknown without erasing earlier valid
+authority. Startup status is not a `/gl` generation and cannot confirm a Lock
+or Unlock command.
 
 Exact `trigger/<id>/gl` messages provide live authority. `gls=1` means locked
 (`True`) and `gls=0` means unlocked (`False`); exact `False` is authority, not

@@ -129,11 +129,18 @@ class DocumentationTests(unittest.TestCase):
             "GRITLock startup while RFID hydrated",
             "- [x] Bounded post-SUBACK request/response hydration implemented "
             "and tested offline",
+            "- [x] Exact merged PR #28 passed gate and RFID startup on Dion's "
+            "installation",
+            "- [x] Exact merged PR #28 left GRITLock Unknown despite unanimous "
+            "current-connection `/sts gls=1`",
+            "- [x] Strict per-request GRITLock startup correlation defect "
+            "identified and corrected offline",
         ):
             self.assertIn(evidence_item, checklist_v011)
         for pending_item in (
-            "- [ ] Corrective v0.1.2 Lock, Unlock, confirmation, and "
-            "immediate entity state pass on both installations",
+            "- [ ] Corrective v0.1.2 GRITLock startup, Lock, Unlock, "
+            "confirmation, and immediate entity state pass on both "
+            "installations",
             "- [ ] HACS validation green for the corrective branch",
             "- [ ] Hassfest validation green for the corrective branch",
             "- [ ] Jeff GRITLock Lock succeeds with all-`gte=0`, `gls=1`",
@@ -142,7 +149,8 @@ class DocumentationTests(unittest.TestCase):
             "offers Lock",
             "- [ ] Jeff gate startup state hydrates from fresh requested MQTT "
             "status",
-            "- [ ] Dion gate startup state hydrates for every responding gate",
+            "- [ ] Dion GRITLock startup `/sts gls=1` snapshot displays "
+            "Locked and offers Unlock",
             "- [ ] Tag `v0.1.2` created",
             "- [ ] GitHub release v0.1.2 created",
             "- [ ] Final HACS install completed from published `v0.1.2`",
@@ -324,17 +332,20 @@ class DocumentationTests(unittest.TestCase):
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(
             encoding="utf-8"
         )
+        architecture_flat = " ".join(architecture.split())
         for expected in (
             "Gate | MQTT live state",
             "RFID | Strict individual `GET /api/rfid/{id}`",
-            "GRITLock | Fresh unanimous requested trigger `/sts`",
+            "GRITLock | Bounded current-connection trigger `/sts`",
             "Collector | Strict individual `GET /api/collector/{id}` detail",
             "Production code contains no MQTT publish path.",
             "`POST /api/device/mesh-telemetry/refresh/{type}/{id}`",
             "`/req-tel` cannot hydrate or alter a gate",
             "cannot confirm Lock or Unlock",
+            "Opening a command generation closes any unsettled "
+            "startup snapshot",
         ):
-            self.assertIn(expected, architecture)
+            self.assertIn(expected, architecture_flat)
 
     def test_startup_hydration_sources_and_boundaries_are_documented(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -342,20 +353,23 @@ class DocumentationTests(unittest.TestCase):
         troubleshooting = (ROOT / "docs/TROUBLESHOOTING.md").read_text(
             encoding="utf-8"
         )
+        readme_flat = " ".join(readme.split())
+        entities_flat = " ".join(entities.split())
         for expected in (
             "exact runtime subscription is ready",
-            "Fresh MQTT `/sts` or `/tel` responses hydrate startup",
-            "does not publish MQTT or operate equipment",
+            "GRITLock instead opens one bounded",
+            "`/tel` without `gls` is ignored",
+            "The integration does not publish MQTT or operate equipment",
         ):
-            self.assertIn(expected, readme)
+            self.assertIn(expected, readme_flat)
         for expected in (
             "assumption that a retained MQTT status exists",
             "Startup status is not a `/gl` generation",
-            "Missing, invalid, contradictory, stale, or pre-request input",
+            "Insufficient evidence leaves state Unknown",
         ):
-            self.assertIn(expected, entities)
+            self.assertIn(expected, entities_flat)
         self.assertIn("does not depend on a retained message", troubleshooting)
-        self.assertIn("`/req-tel` is not state", troubleshooting)
+        self.assertIn("`/req-tel` only shows", troubleshooting)
 
     def test_gritlock_dual_participant_modes_are_documented(self) -> None:
         architecture = (ROOT / "docs/ARCHITECTURE.md").read_text(

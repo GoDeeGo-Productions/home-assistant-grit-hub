@@ -96,11 +96,11 @@ state rather than inventing one. The default poll is a 30-second fallback.
 GRITLock uses `gls` from exact current-generation `/gl` messages as its
 ongoing and command-confirmation authority: `gls=1` is Locked and `gls=0` is
 Unlocked. Exact zero is a valid state and is not treated as missing. At startup
-or reconnect, a bounded request for each eligible trigger may also hydrate the
-same displayed state from a complete unanimous set of fresh `/sts` or `/tel`
-responses. That startup set is connection-scoped, cannot confirm a command, and
-fails closed on a missing, invalid, contradictory, stale, or pre-request
-response. `/req-tel` is not state.
+or reconnect, exact MQTT readiness opens a bounded current-connection snapshot.
+Strict `gls` from trigger `/sts` or `/tel` can hydrate the same displayed
+state even when it was not caused by one individual REST refresh. `/tel`
+without `gls` is ignored. Best-effort refresh completion alone is not state
+evidence, and startup status cannot confirm a command.
 A nonempty, complete, valid REST `gritLockEnabled` set defines required
 participants when available. A complete list with no enabled triggers is not a
 usable participant set. Without usable REST metadata, two firmware patterns are
@@ -116,13 +116,15 @@ settles a partial generation. After MQTT disconnect, or before the first valid
 settlement, GRITLock is Unknown and unavailable; REST `gritLockState` is not a
 displayed fallback.
 
-PR #25 corrected dual participant selection, and PR #26 corrected command
-generation settlement, but the published build still conflated the latest
-generation result with persistent displayed-state authority. The v0.1.2
-correction remains blocked from publication until Lock, Unlock, confirmation,
-and immediate entity state pass on both acceptance systems. Until then, if
-equipment changes but Home Assistant reports failed confirmation, do not repeat
-commands; verify the physical site safely and retain only redacted logs.
+PR #28 corrected gate startup hydration and preserved RFID startup behavior; the
+exact merged build passed both paths on Dion's installation. GRITLock remained
+Unknown because its otherwise valid current-connection `/sts gls` evidence was
+still coupled to individual refresh timing. The v0.1.2 correction remains
+blocked until GRITLock startup, Lock, Unlock, confirmation, and immediate state
+pass on Dion's and Jeff's systems, with gate and RFID regressions rechecked.
+Until then, if equipment changes but Home Assistant reports failed confirmation,
+do not repeat commands; verify the physical site safely and retain only redacted
+logs.
 
 ## Collector command waits or fails
 

@@ -8,11 +8,13 @@ versioning for public releases.
 ### Fixed
 
 - Corrected gate and GRITLock startup hydration after the exact MQTT
-  subscription becomes ready. Bounded authenticated per-device telemetry
-  requests now await fresh `/sts` or `/tel` responses; gate `p` accepts bounded
-  numeric text, `/req-tel` is not state, and unanimous trigger status hydrates
-  GRITLock without entering or confirming a `/gl` command generation. Partial
-  response failures preserve valid per-device state and remain fail closed.
+  subscription becomes ready. Gates retain bounded per-request `/sts` or
+  `/tel` correlation and numeric-text `p` support. GRITLock now uses a separate
+  bounded current-connection snapshot: strict `/sts` or `/tel` `gls` may arrive
+  before or independently of best-effort REST refresh completion, `/tel`
+  without `gls` is ignored, and safe participant consensus remains isolated
+  from `/gl` command confirmation. Opening a command closes any unsettled
+  startup snapshot. Partial failures preserve valid authority.
 - Corrected the v0.1.1 GRITLock participant-selection regression for mixed
   trigger generations. Valid REST participant metadata still takes precedence;
   otherwise each fresh quiet-settled `/gl` generation uses exactly its `gte=1`
