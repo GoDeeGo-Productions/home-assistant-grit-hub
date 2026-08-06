@@ -67,31 +67,25 @@ class GritHubSystemLock(GritHubEntity, LockEntity):
             raise HomeAssistantError(
                 "GRITLock state could not be confirmed"
             )
-        confirmation_boundary = self.coordinator.mqtt_receive_sequence
-        generation_id = self.coordinator.begin_gritlock_generation(
-            confirmation_boundary
+        connection_generation = (
+            self.coordinator.mqtt_connection_generation
         )
-        if generation_id is None:
-            raise HomeAssistantError(
-                "GRITLock state could not be confirmed"
-            )
+        confirmation_boundary = self.coordinator.mqtt_receive_sequence
         try:
             await self.coordinator.api.set_gritlock(locked)
-            confirmed = await self.coordinator.async_confirm_gritlock_state(
+            confirmed = await self.coordinator.async_wait_for_gritlock_state(
                 locked,
-                generation_id=generation_id,
+                after_connection_generation=connection_generation,
+                after_receive_sequence=confirmation_boundary,
                 timeout=HUB_CONFIRM_TIMEOUT,
             )
         except asyncio.CancelledError:
-            self.coordinator.cancel_gritlock_generation(generation_id)
             raise
         except Exception as err:
-            self.coordinator.cancel_gritlock_generation(generation_id)
             raise HomeAssistantError(
                 "GRITLock state could not be confirmed"
             ) from err
         if not confirmed:
-            self.coordinator.cancel_gritlock_generation(generation_id)
             raise HomeAssistantError(
                 "GRITLock state could not be confirmed"
             )

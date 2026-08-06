@@ -454,7 +454,10 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             )
             snapshot = instance._gritlock_startup_snapshot
             self.assertIsNotNone(snapshot)
-            self.assertEqual(snapshot.observations, {"trigger-one": True})
+            self.assertEqual(
+                {key: value[0] for key, value in snapshot.observations.items()},
+                {"trigger-one": True},
+            )
             await self.wait_for_gritlock_startup(instance)
 
         self.assertTrue(instance.gritlock_state)
@@ -493,7 +496,10 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             )
             snapshot = instance._gritlock_startup_snapshot
             self.assertIsNotNone(snapshot)
-            self.assertEqual(snapshot.observations, {"trigger-one": False})
+            self.assertEqual(
+                {key: value[0] for key, value in snapshot.observations.items()},
+                {"trigger-one": False},
+            )
             await self.wait_for_gritlock_startup(instance)
 
         self.assertFalse(instance.gritlock_state)
@@ -640,8 +646,24 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             0.01,
         ):
             instance, _api = self.coordinator(devices)
-            instance._gritlock_authoritative_state = True
             instance.set_mqtt_connected(True)
+            instance._clear_gritlock_startup_snapshot()
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-one",
+                    "gl",
+                    {"gte": 0, "gls": 1},
+                )
+            )
+            burst = instance._gritlock_live_burst
+            self.assertTrue(
+                instance._settle_gritlock_burst(burst, force=True)
+            )
+            self.assertIs(instance.gritlock_state, True)
+
+            instance._begin_gritlock_startup_snapshot()
             for trigger_id, locked in (
                 ("trigger-one", 1),
                 ("trigger-two", 0),
@@ -658,8 +680,11 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             await self.wait_for_gritlock_startup(instance)
 
         self.assertIsNone(instance.gritlock_state)
+        self.assertEqual(
+            instance._gritlock_state_observation.source,
+            coordinator_module._GRITLOCK_SOURCE_DISAGREEMENT,
+        )
         self.assertFalse(LOCK_MODULE.GritHubSystemLock(instance).available)
-
     async def test_trigger_status_hydrates_exact_locked_and_unlocked_states(self):
         for locked, topic in ((True, "sts"), (False, "tel")):
             with self.subTest(locked=locked, topic=topic):
@@ -792,10 +817,12 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(
             coordinator_module,
             "_GRITLOCK_STARTUP_QUIET_TIME",
-            1.0,
+            0.01,
         ):
             instance, _api = self.coordinator(devices)
             instance.set_mqtt_connected(True)
+            connection = instance.mqtt_connection_generation
+            boundary = instance.mqtt_receive_sequence
             self.assertTrue(
                 instance.handle_mqtt_message(
                     "hub-expected",
@@ -805,40 +832,22 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
                     {"gls": 1},
                 )
             )
-            snapshot = instance._gritlock_startup_snapshot
-            self.assertIsNotNone(snapshot)
+            await self.wait_for_gritlock_startup(instance)
 
-            generation_id = instance.begin_gritlock_generation(
-                instance.mqtt_receive_sequence
-            )
-            self.assertIsNotNone(generation_id)
-            self.assertIsNone(instance._gritlock_startup_snapshot)
-            self.assertFalse(
-                instance._settle_gritlock_startup_snapshot(
-                    snapshot,
-                    now=snapshot.deadline_monotonic,
-                )
-            )
-            self.assertFalse(
-                instance.handle_mqtt_message(
-                    "hub-expected",
-                    "trigger",
-                    "trigger-one",
-                    "sts",
-                    {"gls": 1},
-                )
-            )
-
+        self.assertIs(instance.gritlock_state, True)
+        self.assertEqual(
+            instance._gritlock_state_observation.source,
+            coordinator_module._GRITLOCK_SOURCE_STARTUP,
+        )
         self.assertFalse(
-            await instance.async_confirm_gritlock_state(
+            await instance.async_wait_for_gritlock_state(
                 True,
-                generation_id=generation_id,
+                after_connection_generation=connection,
+                after_receive_sequence=boundary,
                 timeout=0.01,
             )
         )
-        self.assertIsNone(instance.gritlock_state)
-        self.assertTrue(instance.cancel_gritlock_generation(generation_id))
-
+        self.assertIs(instance.gritlock_state, True)
     async def test_reconnect_rejects_prior_state_and_accepts_ready_status(self):
         instance, _api = await self._hydrate_gritlock(False, "sts")
         self.assertTrue(instance.set_mqtt_connected(False))

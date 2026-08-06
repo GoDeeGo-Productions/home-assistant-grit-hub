@@ -84,10 +84,13 @@ _COLLECTOR_CONFIRM_INTERVAL = 0.25
 _MAX_CONFIRM_TIMEOUT = REST_DISCOVERY_TIMEOUT * 6
 _GRITLOCK_SETTLE_TIME = 0.25
 _MAX_GRITLOCK_OBSERVATIONS = 64
-_MAX_GRITLOCK_GENERATION_RESULTS = 8
 _GRITLOCK_STARTUP_WINDOW = _RECONCILIATION_RESPONSE_TIMEOUT
 _GRITLOCK_STARTUP_QUIET_TIME = _GRITLOCK_SETTLE_TIME
 _MAX_MQTT_STATE_WAITERS = 64
+
+_GRITLOCK_SOURCE_STARTUP = "startup_status"
+_GRITLOCK_SOURCE_LIVE = "live_gl"
+_GRITLOCK_SOURCE_DISAGREEMENT = "disagreement"
 
 _INVALID = object()
 
@@ -103,24 +106,24 @@ class _GritlockObservation:
 
 
 @dataclass(slots=True)
-class _GritlockGeneration:
-    """One bounded trigger /gl transition burst."""
+class _GritlockBurst:
+    """One continuous bounded trigger /gl transition burst."""
 
-    generation_id: int
-    after_sequence: int
-    rest_participants: frozenset[str]
-    rest_participants_usable: bool
+    connection_generation: int
     observations: dict[str, _GritlockObservation]
     overflowed: bool = False
     last_received_monotonic: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class _SettledGritlockGeneration:
-    """The bounded published result of one settled transition burst."""
+class _GritlockStateObservation:
+    """One immutable authoritative GRITLock state observation."""
 
-    generation_id: int
     state: bool | None
+    connection_generation: int
+    first_receive_sequence: int
+    last_receive_sequence: int
+    source: str
     participants: frozenset[str]
 
 
@@ -145,7 +148,7 @@ class _GritlockStartupSnapshot:
     rest_participants_usable: bool
     fallback_candidates: frozenset[str]
     fallback_usable: bool
-    observations: dict[str, bool]
+    observations: dict[str, tuple[bool, int]]
     updated: asyncio.Event
     deadline_monotonic: float
     last_received_monotonic: float | None = None
@@ -559,17 +562,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._refresh_sequence = 0
         self._hub_update_sequence = 0
         self._gritlock_update_sequence = 0
-        self._gritlock_generation_sequence = 0
-        self._gritlock_authoritative_state: bool | None = None
-        self._gritlock_active_generation: _GritlockGeneration | None = None
-        self._gritlock_settled_generation: (
-            _SettledGritlockGeneration | None
+        self._gritlock_state_observation: (
+            _GritlockStateObservation | None
         ) = None
-        self._gritlock_generation_results: dict[
-            int, _SettledGritlockGeneration
-        ] = {}
+        self._gritlock_live_burst: _GritlockBurst | None = None
         self._gritlock_settle_task: asyncio.Task[None] | None = None
-        self._gritlock_settle_task_generation: int | None = None
         self._reconciliation_task: asyncio.Task[None] | None = None
         self._reconcile_again = False
         self._reconciliation_enabled = True
@@ -609,6 +606,11 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._mqtt_connected
 
     @property
+    def mqtt_connection_generation(self) -> int:
+        """Return the current ready MQTT connection generation."""
+        return self._mqtt_connection_generation
+
+    @property
     def hub_data(self) -> dict[str, Any]:
         """Return only the API client's sanitized hub allowlist."""
         if not isinstance(self.data, dict):
@@ -626,17 +628,19 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def gritlock_state(self) -> bool | None:
-        """Return the last valid authoritative MQTT consensus."""
-        return self._gritlock_authoritative_state
+        """Return state from the one latest authoritative observation."""
+        observation = self._gritlock_state_observation
+        return observation.state if observation is not None else None
 
     @property
     def gritlock_participating_trigger_ids(self) -> frozenset[str]:
-        """Return settled MQTT participants or provisional REST participants."""
-        settled = self._gritlock_settled_generation
-        if settled is not None:
-            return settled.participants
-        participants, _complete = self._rest_gritlock_participants()
-        return participants
+        """Return participants from the latest authoritative observation."""
+        observation = self._gritlock_state_observation
+        return (
+            observation.participants
+            if observation is not None
+            else frozenset()
+        )
 
     @property
     def refresh_sequence(self) -> int:
@@ -1597,16 +1601,15 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if len(unique) > _MAX_GRITLOCK_OBSERVATIONS:
             complete = False
             unique = unique[:_MAX_GRITLOCK_OBSERVATIONS]
-        # An empty REST set cannot identify any participant. Treat it as
-        # unavailable so one settled MQTT generation can apply the bounded
-        # participant-selection fallback instead of remaining Unknown.
+        # An empty REST set cannot identify startup participants. Treat it as
+        # unavailable so current-connection status reporters can provide the
+        # bounded startup fallback instead of remaining Unknown.
         return frozenset(unique), bool(unique) and metadata_seen and complete
 
     def _cancel_gritlock_settle_task(self) -> None:
-        """Cancel the one bounded generation-settlement task."""
+        """Cancel the one bounded live-burst settlement task."""
         task = self._gritlock_settle_task
         self._gritlock_settle_task = None
-        self._gritlock_settle_task_generation = None
         if task is None or task.done():
             return
         try:
@@ -1617,99 +1620,99 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             task.cancel()
 
     def _reset_gritlock_mqtt_state(self) -> None:
-        """Discard MQTT generations and their authoritative live state."""
+        """Discard continuous MQTT evidence and authoritative state."""
         self._cancel_gritlock_settle_task()
-        self._gritlock_active_generation = None
-        self._gritlock_settled_generation = None
-        self._gritlock_generation_results.clear()
-        self._gritlock_authoritative_state = None
+        self._gritlock_live_burst = None
+        self._gritlock_state_observation = None
 
-    def _new_gritlock_generation(
+    def _publish_gritlock_state_observation(
         self,
-        after_sequence: int,
-    ) -> _GritlockGeneration:
-        participants, usable = self._rest_gritlock_participants()
-        self._gritlock_generation_sequence += 1
-        generation = _GritlockGeneration(
-            generation_id=self._gritlock_generation_sequence,
-            after_sequence=after_sequence,
-            rest_participants=participants,
-            rest_participants_usable=usable,
-            observations={},
-        )
-        self._gritlock_active_generation = generation
-        return generation
-
-    def begin_gritlock_generation(self, after_sequence: int) -> int | None:
-        """Start one explicit command generation at the current MQTT boundary."""
+        state: bool | None,
+        *,
+        connection_generation: int,
+        first_receive_sequence: int,
+        last_receive_sequence: int,
+        source: str,
+        participants: frozenset[str],
+    ) -> bool:
+        """Publish one bounded immutable observation and notify once."""
         if (
-            not self._reconciliation_enabled
+            connection_generation != self._mqtt_connection_generation
             or not self._mqtt_connected
-            or _local_receive_sequence(after_sequence) is _INVALID
-            or after_sequence != self._mqtt_receive_sequence
+            or _local_receive_sequence(first_receive_sequence) is _INVALID
+            or _local_receive_sequence(last_receive_sequence) is _INVALID
+            or first_receive_sequence <= 0
+            or first_receive_sequence > last_receive_sequence
+            or last_receive_sequence > self._mqtt_receive_sequence
+            or not participants
+            or len(participants) > _MAX_GRITLOCK_OBSERVATIONS
+            or source
+            not in {
+                _GRITLOCK_SOURCE_STARTUP,
+                _GRITLOCK_SOURCE_LIVE,
+                _GRITLOCK_SOURCE_DISAGREEMENT,
+            }
+            or (
+                source == _GRITLOCK_SOURCE_DISAGREEMENT
+                and state is not None
+            )
+            or (
+                source != _GRITLOCK_SOURCE_DISAGREEMENT
+                and not isinstance(state, bool)
+            )
         ):
-            return None
-        self._clear_gritlock_startup_snapshot()
-        self._cancel_gritlock_settle_task()
-        generation = self._new_gritlock_generation(after_sequence)
-        # A new explicit command invalidates any incomplete prior generation.
-        # Wake its waiter so it fails closed instead of lingering until timeout.
-        self._wake_mqtt_state_waiters()
-        return generation.generation_id
-
-    def cancel_gritlock_generation(self, generation_id: int) -> bool:
-        """Discard one unconfirmed command generation without changing state."""
-        generation = self._gritlock_active_generation
-        if generation is None or generation.generation_id != generation_id:
             return False
-        self._cancel_gritlock_settle_task()
-        self._gritlock_active_generation = None
+
+        self._gritlock_state_observation = _GritlockStateObservation(
+            state=state,
+            connection_generation=connection_generation,
+            first_receive_sequence=first_receive_sequence,
+            last_receive_sequence=last_receive_sequence,
+            source=source,
+            participants=participants,
+        )
+        self.async_update_listeners()
         self._wake_mqtt_state_waiters()
         return True
 
     @staticmethod
-    def _evaluate_gritlock_generation(
-        generation: _GritlockGeneration,
+    def _evaluate_gritlock_burst(
+        burst: _GritlockBurst,
     ) -> tuple[bool | None, frozenset[str], bool]:
-        """Return state, participants, and explicit-invalidity evidence."""
-        if generation.overflowed:
+        """Return state, participants, and explicit disagreement."""
+        if burst.overflowed or not burst.observations:
             return None, frozenset(), False
-        if generation.rest_participants_usable:
-            required = generation.rest_participants
-        else:
-            explicit_participants = frozenset(
-                trigger_id
-                for trigger_id, observation in generation.observations.items()
-                if observation.explicitly_participating
-            )
-            required = explicit_participants or frozenset(
-                generation.observations
-            )
-        if len(required) > _MAX_GRITLOCK_OBSERVATIONS:
-            return None, frozenset(), False
-        if not required or not required.issubset(generation.observations):
-            return None, required, False
-
+        explicit_participants = frozenset(
+            trigger_id
+            for trigger_id, observation in burst.observations.items()
+            if observation.explicitly_participating
+        )
+        participants = explicit_participants or frozenset(burst.observations)
         states = {
-            generation.observations[trigger_id].locked
-            for trigger_id in required
+            burst.observations[trigger_id].locked
+            for trigger_id in participants
         }
         if len(states) == 1:
-            return next(iter(states)), required, False
-        return None, required, True
+            return next(iter(states)), participants, False
+        return None, participants, True
 
-    def _settle_gritlock_generation(
+    def _settle_gritlock_burst(
         self,
-        generation_id: int,
+        burst: _GritlockBurst,
         *,
         force: bool = False,
         now: float | None = None,
     ) -> bool:
-        generation = self._gritlock_active_generation
-        if generation is None or generation.generation_id != generation_id:
+        """Settle one continuous live burst without retaining a result map."""
+        if (
+            self._gritlock_live_burst is not burst
+            or burst.connection_generation
+            != self._mqtt_connection_generation
+            or not self._mqtt_connected
+        ):
             return False
         current_time = time.monotonic() if now is None else now
-        last_received = generation.last_received_monotonic
+        last_received = burst.last_received_monotonic
         if (
             not force
             and (
@@ -1719,90 +1722,73 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             return False
 
-        state, participants, invalidates_state = (
-            self._evaluate_gritlock_generation(generation)
+        state, participants, disagreement = self._evaluate_gritlock_burst(
+            burst
         )
-        settled = _SettledGritlockGeneration(
-            generation_id=generation_id,
-            state=state,
+        self._gritlock_live_burst = None
+        self._cancel_gritlock_settle_task()
+        if not participants:
+            return False
+        sequences = [
+            burst.observations[trigger_id].receive_sequence
+            for trigger_id in participants
+        ]
+        return self._publish_gritlock_state_observation(
+            state if isinstance(state, bool) else None,
+            connection_generation=burst.connection_generation,
+            first_receive_sequence=min(sequences),
+            last_receive_sequence=max(sequences),
+            source=(
+                _GRITLOCK_SOURCE_DISAGREEMENT
+                if disagreement
+                else _GRITLOCK_SOURCE_LIVE
+            ),
             participants=participants,
         )
-        self._gritlock_active_generation = None
-        self._gritlock_settled_generation = settled
-        self._gritlock_generation_results[generation_id] = settled
-        if isinstance(state, bool):
-            self._gritlock_authoritative_state = state
-        elif invalidates_state:
-            self._gritlock_authoritative_state = None
-        while (
-            len(self._gritlock_generation_results)
-            > _MAX_GRITLOCK_GENERATION_RESULTS
-        ):
-            oldest = min(self._gritlock_generation_results)
-            self._gritlock_generation_results.pop(oldest, None)
-        self._cancel_gritlock_settle_task()
-        self.async_update_listeners()
-        self._wake_mqtt_state_waiters()
-        return True
 
-    async def _async_settle_gritlock_generation(
+    async def _async_settle_gritlock_burst(
         self,
-        generation_id: int,
+        burst: _GritlockBurst,
     ) -> None:
+        """Naturally settle the active continuous live burst after quiet."""
         try:
-            while True:
-                generation = self._gritlock_active_generation
+            while self._gritlock_live_burst is burst:
                 if (
-                    generation is None
-                    or generation.generation_id != generation_id
-                    or generation.last_received_monotonic is None
+                    burst.connection_generation
+                    != self._mqtt_connection_generation
+                    or not self._mqtt_connected
+                    or burst.last_received_monotonic is None
                 ):
                     return
                 remaining = _GRITLOCK_SETTLE_TIME - (
-                    time.monotonic() - generation.last_received_monotonic
+                    time.monotonic() - burst.last_received_monotonic
                 )
                 if remaining > 0:
                     await asyncio.sleep(remaining)
                     continue
-                self._settle_gritlock_generation(generation_id)
+                self._settle_gritlock_burst(burst)
                 return
         finally:
             if self._gritlock_settle_task is asyncio.current_task():
                 self._gritlock_settle_task = None
-                self._gritlock_settle_task_generation = None
 
-    def _ensure_gritlock_settle_task(self, generation_id: int) -> None:
-        """Ensure at most one quiet-period settlement task is active."""
+    def _ensure_gritlock_settle_task(
+        self,
+        burst: _GritlockBurst,
+    ) -> None:
+        """Ensure at most one continuous live-burst task is active."""
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return
         task = self._gritlock_settle_task
-        if (
-            task is not None
-            and not task.done()
-            and self._gritlock_settle_task_generation == generation_id
-        ):
-            return
         if task is not None and not task.done():
+            if self._gritlock_live_burst is burst:
+                return
             task.cancel()
-        self._gritlock_settle_task_generation = generation_id
         self._gritlock_settle_task = asyncio.create_task(
-            self._async_settle_gritlock_generation(generation_id)
+            self._async_settle_gritlock_burst(burst)
         )
-
-    def _update_active_gritlock_rest_participants(
-        self,
-        devices: Any,
-    ) -> None:
-        """Refresh REST participation without overwriting settled MQTT state."""
-        generation = self._gritlock_active_generation
-        if generation is None:
-            return
-        participants, usable = self._rest_gritlock_participants(devices)
-        generation.rest_participants = participants
-        generation.rest_participants_usable = usable
-        self._wake_mqtt_state_waiters()
 
     def _clear_startup_hydration(
         self,
@@ -2003,18 +1989,28 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             participants = frozenset(snapshot.observations)
 
         states = {
-            snapshot.observations[trigger_id]
+            snapshot.observations[trigger_id][0]
             for trigger_id in participants
         }
-        authoritative = next(iter(states)) if len(states) == 1 else None
-        changed = self._gritlock_authoritative_state is not authoritative
-        self._gritlock_authoritative_state = authoritative
+        sequences = [
+            snapshot.observations[trigger_id][1]
+            for trigger_id in participants
+        ]
+        state = next(iter(states)) if len(states) == 1 else None
         self._gritlock_startup_snapshot = None
         snapshot.updated.set()
-        if changed:
-            self.async_update_listeners()
-        self._wake_mqtt_state_waiters()
-        return True
+        return self._publish_gritlock_state_observation(
+            state,
+            connection_generation=snapshot.connection_generation,
+            first_receive_sequence=min(sequences),
+            last_receive_sequence=max(sequences),
+            source=(
+                _GRITLOCK_SOURCE_STARTUP
+                if isinstance(state, bool)
+                else _GRITLOCK_SOURCE_DISAGREEMENT
+            ),
+            participants=participants,
+        )
 
     def _record_gritlock_startup_observation(
         self,
@@ -2055,14 +2051,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._clear_gritlock_startup_snapshot(snapshot)
             return False
 
-        snapshot.observations[device_id] = locked
+        snapshot.observations[device_id] = (locked, receive_sequence)
         snapshot.last_received_monotonic = time.monotonic()
         snapshot.updated.set()
-        if (
-            snapshot.rest_participants_usable
-            and snapshot.rest_participants.issubset(snapshot.observations)
-        ):
-            self._settle_gritlock_startup_snapshot(snapshot)
         return True
 
     async def _async_collect_gritlock_startup(
@@ -2123,7 +2114,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and self._mqtt_connected
                 and snapshot.connection_generation
                 == self._mqtt_connection_generation
-                and self._gritlock_authoritative_state is None
+                and self.gritlock_state is None
             ):
                 _LOGGER.warning(
                     "GRITLock startup state hydration was incomplete"
@@ -2511,48 +2502,64 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except asyncio.TimeoutError:
             return False
 
-    async def async_confirm_gritlock_state(
+    async def async_wait_for_gritlock_state(
         self,
         expected: bool,
         *,
-        generation_id: int,
+        after_connection_generation: int,
+        after_receive_sequence: int,
         timeout: float,
     ) -> bool:
-        """Require the published result of one explicit settled generation."""
+        """Wait for one fresh live /gl observation on this connection."""
         if (
             not isinstance(expected, bool)
-            or isinstance(generation_id, bool)
-            or not isinstance(generation_id, int)
-            or generation_id <= 0
+            or isinstance(after_connection_generation, bool)
+            or not isinstance(after_connection_generation, int)
+            or after_connection_generation <= 0
+            or isinstance(after_receive_sequence, bool)
+            or not isinstance(after_receive_sequence, int)
+            or after_receive_sequence < 0
+            or after_receive_sequence > self._mqtt_receive_sequence
             or isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
             or not 0 < timeout <= _MAX_CONFIRM_TIMEOUT
+            or not self._reconciliation_enabled
+            or not self._mqtt_connected
+            or self._mqtt_connection_generation
+            != after_connection_generation
         ):
             return False
 
-        connection_generation = self._mqtt_connection_generation
-
         def result() -> bool | None:
-            settled = self._gritlock_generation_results.get(generation_id)
-            if settled is None:
+            if (
+                not self._reconciliation_enabled
+                or not self._mqtt_connected
+                or self._mqtt_connection_generation
+                != after_connection_generation
+            ):
+                return False
+            observation = self._gritlock_state_observation
+            if (
+                observation is None
+                or observation.connection_generation
+                != after_connection_generation
+                or observation.last_receive_sequence
+                <= after_receive_sequence
+                or observation.first_receive_sequence
+                <= after_receive_sequence
+            ):
                 return None
-            return settled.state is expected
+            if observation.source == _GRITLOCK_SOURCE_DISAGREEMENT:
+                return False
+            if observation.source != _GRITLOCK_SOURCE_LIVE:
+                return None
+            return observation.state is expected
 
         async def wait_for_result() -> bool:
-            while (
-                self._reconciliation_enabled
-                and self._mqtt_connected
-                and self._mqtt_connection_generation == connection_generation
-            ):
+            while True:
                 outcome = result()
                 if outcome is not None:
                     return outcome
-                active = self._gritlock_active_generation
-                if (
-                    active is None
-                    or active.generation_id != generation_id
-                ):
-                    return False
                 if len(self._mqtt_state_waiters) >= _MAX_MQTT_STATE_WAITERS:
                     return False
                 waiter = asyncio.get_running_loop().create_future()
@@ -2564,15 +2571,10 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await waiter
                 finally:
                     self._mqtt_state_waiters.discard(waiter)
-            return False
 
         try:
             return await asyncio.wait_for(wait_for_result(), timeout=timeout)
         except asyncio.TimeoutError:
-            # Only the quiet-period task may settle a GRITLock generation.
-            # A command timeout must never turn an active or partial burst into
-            # authoritative state, but may consume a result that already
-            # settled naturally at the deadline boundary.
             return result() is True
 
     def _apply_gritlock_observation(
@@ -2580,7 +2582,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         trigger_id: str,
         payload: dict[str, Any],
     ) -> bool:
-        """Add strict trigger /gl evidence to one bounded generation."""
+        """Add strict trigger /gl evidence to the continuous live burst."""
         explicitly_participating = _strict_binary_bool(
             payload.get("gte", _INVALID)
         )
@@ -2592,46 +2594,53 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
         now = time.monotonic()
-        generation = self._gritlock_active_generation
+        burst = self._gritlock_live_burst
         if (
-            generation is not None
-            and generation.last_received_monotonic is not None
-            and now - generation.last_received_monotonic
+            burst is not None
+            and burst.connection_generation
+            != self._mqtt_connection_generation
+        ):
+            self._gritlock_live_burst = None
+            self._cancel_gritlock_settle_task()
+            burst = None
+        if (
+            burst is not None
+            and burst.last_received_monotonic is not None
+            and now - burst.last_received_monotonic
             >= _GRITLOCK_SETTLE_TIME
         ):
-            self._settle_gritlock_generation(
-                generation.generation_id,
-                now=now,
+            self._settle_gritlock_burst(burst, now=now)
+            burst = self._gritlock_live_burst
+        if burst is None:
+            burst = _GritlockBurst(
+                connection_generation=self._mqtt_connection_generation,
+                observations={},
             )
-            generation = None
-        if generation is None:
-            generation = self._new_gritlock_generation(
-                self._mqtt_receive_sequence
-            )
+            self._gritlock_live_burst = burst
 
         if (
-            trigger_id not in generation.observations
-            and len(generation.observations)
-            >= _MAX_GRITLOCK_OBSERVATIONS
+            trigger_id not in burst.observations
+            and len(burst.observations) >= _MAX_GRITLOCK_OBSERVATIONS
         ):
-            generation.overflowed = True
-            generation.last_received_monotonic = now
-            self._ensure_gritlock_settle_task(generation.generation_id)
+            burst.overflowed = True
+            burst.last_received_monotonic = now
+            self._ensure_gritlock_settle_task(burst)
             self._wake_mqtt_state_waiters()
             _LOGGER.debug(
                 "GRIT MQTT message rejected: GRITLock state limit reached"
             )
             return False
 
+        self._clear_gritlock_startup_snapshot()
         self._mqtt_receive_sequence += 1
-        generation.observations[trigger_id] = _GritlockObservation(
+        burst.observations[trigger_id] = _GritlockObservation(
             explicitly_participating=explicitly_participating,
             locked=locked,
             receive_sequence=self._mqtt_receive_sequence,
             received_monotonic=now,
         )
-        generation.last_received_monotonic = now
-        self._ensure_gritlock_settle_task(generation.generation_id)
+        burst.last_received_monotonic = now
+        self._ensure_gritlock_settle_task(burst)
         self._wake_mqtt_state_waiters()
         return True
 
@@ -2720,9 +2729,6 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._hub_update_sequence = refresh_sequence
         if triggers_refreshed:
             self._gritlock_update_sequence = refresh_sequence
-            self._update_active_gritlock_rest_participants(
-                data["devices"]
-            )
         return data
 
     def handle_mqtt_message(
@@ -2807,6 +2813,15 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if gritlock_startup_accepted:
                 self._mqtt_receive_sequence = receive_sequence
+                snapshot = self._gritlock_startup_snapshot
+                if (
+                    snapshot is not None
+                    and snapshot.rest_participants_usable
+                    and snapshot.rest_participants.issubset(
+                        snapshot.observations
+                    )
+                ):
+                    self._settle_gritlock_startup_snapshot(snapshot)
 
         sequence_present, source_sequence = _ordering_value(
             payload,

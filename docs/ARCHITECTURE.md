@@ -14,7 +14,7 @@ sanitized observations without assigning one protocol universal authority.
 | `auth.py` | Shared opaque bearer-token validation and exact header construction |
 | `discovery.py` | Bounded passive MQTT discovery/readiness validation |
 | `mqtt_live.py` | Dynamic Paho import, lifecycle state, exact subscription, sanitization, and parsed-message callbacks |
-| `coordinator.py` | Polling, ordering, source authority, confirmation generations, bounded refresh work, and cancellation |
+| `coordinator.py` | Polling, ordering, source authority, immutable observations, bounded refresh work, and cancellation |
 | `hub.py` | Strict hub identifier, broker-address, and hub-field sanitization |
 | `entity.py` | Shared device identity and bounded diagnostic attributes |
 | Platform modules | Entity creation and explicit command/confirmation behavior |
@@ -126,16 +126,17 @@ supported Home Assistant APIs, and reloads once.
 | --- | --- |
 | Gate | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry; REST never supplies gate state |
 | RFID | Strict individual `GET /api/rfid/{id}` boolean `state`; exact MQTT `s`/`st` only invalidates and requests refresh |
-| GRITLock | Bounded current-connection trigger `/sts` or `/tel` `gls` snapshot at startup, then settled MQTT `/gl` generations; REST selects participants but does not supply displayed state |
+| GRITLock | One latest immutable observation published by current-connection startup `/sts` or `/tel` `gls`, a naturally settled live `/gl` burst, or explicit disagreement |
 | Collector | Strict individual `GET /api/collector/{id}` detail; proven MQTT may supplement displayed state |
 | Collections | Discovery/inventory, except existing generic switch reconciliation where specifically implemented |
 
 Gate commands capture an MQTT sequence boundary before REST and require a newer
 matching MQTT observation. RFID and collector commands capture their individual
 REST generation before REST and require newer matching detail. GRITLock commands
-capture and open a new MQTT generation before REST and require its settled
-consensus. The LED writes via REST and requires a newer matching full hub
-refresh. No current displayed value alone confirms a command.
+capture the MQTT connection generation and receive sequence before REST, then
+wait against the same latest-observation channel for matching fresh live `/gl`
+authority. The LED writes via REST and requires a newer matching full hub
+refresh. No current displayed value or HTTP success alone confirms a command.
 
 For gates, compact MQTT field `p` is a bounded 0--100 position. Firmware may
 encode it as a number or bounded numeric text. Startup `/sts` or `/tel`, plus
@@ -143,60 +144,64 @@ live `/mv`, `/mv-d`, `/p`, `/s`, and `/st` observations, enter the same
 sanitized per-device state path. `/req-tel` cannot hydrate or alter a gate. Gate
 startup state is never taken from REST.
 
-For GRITLock, exact trigger `/gl` field `gls` is the live lock state:
-`gls=1` is locked (`True`) and `gls=0` is unlocked (`False`). The exact
-unlocked value is valid authority and is distinct from missing or inconclusive
-evidence (`None`). A nonempty, complete, valid
-REST `gritLockEnabled` participant set takes precedence and every
-required trigger must appear in the fresh generation; non-required observations
-do not enter consensus. A complete REST list containing no enabled participant
-does not identify a participant set and is therefore unusable for confirmation.
-When REST metadata is absent or unusable, participant selection is computed
-independently for each fresh quiet-settled generation. If one or more
-observations have `gte=1`, exactly those trigger IDs participate and `gte=0`
-observations do not enter consensus. If no observation has `gte=1`, all unique
-triggers observed in that generation participate, supporting all-zero firmware
-behavior. MQTT-derived participants are not persisted into later generations.
+### Continuous GRITLock observed state
 
-A command creates a new generation at its pre-command receive boundary and
-invalidates any incomplete active generation, waking the old waiter to fail
-closed. The first accepted observation newer than that boundary enters only the
-new generation. Natural quiet settlement publishes the authoritative state,
-notifies coordinator listeners immediately, stores the bounded result for the
-command waiter, and then wakes waiters. Timeout handling never settles active or
-partial evidence; it can only consume a result already settled naturally at the
-deadline boundary.
+The coordinator retains exactly one latest immutable GRITLock state observation.
+It contains `state`, the MQTT connection generation, first and last supporting
+receive sequences, a bounded source (`startup_status`, `live_gl`, or
+`disagreement`), and at most 64 participant identifiers. The entity derives its
+state only from this record: `gls=1` is locked (`True`), `gls=0` is unlocked
+(`False`), and no valid authority or explicit disagreement is Unknown (`None`).
+Exact `False` remains distinct from `None`.
 
-All selected observations must agree on `gls`. A valid settled boolean becomes
-the last authoritative MQTT state. Zero observations, participant-limit
-overflow, a missing REST participant, stale or mixed-generation evidence,
-timeout, cancellation, generation replacement, or an unsettled quiet period
-fails that generation but does not erase an earlier valid state. A complete
-selected-participant disagreement explicitly invalidates that earlier state.
-Disconnect clears MQTT authority. With no valid authority the state is Unknown
-and its entity is unavailable. REST `gritLockState` is not used as a displayed
-fallback because the inventory response has no proven state-freshness contract.
+Live `trigger/<id>/gl` frames enter one continuous bounded quiet-settled burst.
+The latest valid strict `gte` and `gls` observation per trigger replaces only
+that trigger. If one or more fresh observations have `gte=1`, exactly that fresh
+subset participates. If every fresh observation has `gte=0`, every fresh
+observed trigger participates; this includes a sparse valid one-frame burst.
+All selected participants must agree on `gls`. Unanimous one publishes Locked,
+unanimous zero publishes Unlocked, and complete selected-participant
+disagreement publishes Unknown. Malformed, incomplete, overflowing, timed-out,
+or unsettled evidence publishes no new authority and preserves the last valid
+state. REST `gritLockEnabled` metadata does not mutate or redefine an active
+live burst, and REST `gritLockState` is never displayed.
 
 At startup or reconnect, the exact matching SUBACK opens one bounded
 connection-scoped status snapshot. Exact binary `gls` from trigger `/sts` or
-`/tel` may arrive before, during, or after an individual best-effort refresh
-request; only MQTT readiness and the current connection generation define the
-boundary. `/tel` without `gls`, invalid values, pre-readiness observations, and
-prior-connection evidence are ignored. The latest valid scalar per trigger
-replaces only that trigger's earlier snapshot value.
+`/tel` may arrive before, during, or after a best-effort refresh request; only
+MQTT readiness and the current connection generation define the boundary.
+`/tel` without `gls`, invalid values, pre-readiness observations, and prior-
+connection evidence are ignored. A nonempty complete REST
+`gritLockEnabled=true` set selects startup participants only. If that metadata
+is empty or unusable, the bounded unique known triggers that actually report
+valid `gls` form the quiet-settled startup fallback. Startup consensus publishes
+through the same latest-observation field as live `/gl`, but its
+`startup_status` source cannot confirm a command.
 
-A nonempty complete REST `gritLockEnabled=true` set requires exactly those
-participants and ignores nonparticipants. If REST metadata is empty or unusable,
-the bounded set of unique known triggers that actually report valid `gls`
-during the window becomes the fallback participant set after a natural quiet
-period; unrelated inventory entries without `gls` are not required. Unanimous
-one means Locked, unanimous zero means Unlocked, and complete disagreement
-invalidates authority. Insufficient or overflowing evidence remains Unknown
-without erasing an already valid state. Startup status does not create or enter
-a `/gl` generation or command-generation results, and cannot confirm Lock or
-Unlock. Opening a command generation closes any unsettled startup snapshot.
-Later valid `/gl` generations retain their normal
-live-state and command-confirmation authority.
+### GRITLock commands and freshness
+
+Lock sends explicit `PUT /api/hub/lockout` body `{"state": true}` and Unlock
+sends `{"state": false}`. The entity captures both the MQTT connection
+generation and receive sequence before REST. After REST succeeds,
+`async_wait_for_gritlock_state` checks the latest observation before and after
+waiter registration, preventing a lost wakeup. A matching observation that
+arrives while REST is awaiting remains eligible.
+
+Confirmation requires a naturally settled `live_gl` observation on the captured
+connection whose first and last supporting receive sequences are strictly newer
+than the captured boundary and whose state exactly matches the request. Startup
+status, stale or mixed-boundary evidence, HTTP success, the current displayed
+state, an opposite state, disagreement, disconnect, reconnect, timeout, or
+cancellation cannot confirm. There are no command generation IDs, command-owned
+state model, or retained command-result map.
+
+No-op Lock or Unlock requests are not short-circuited: the explicit REST desired
+state is still sent and fresh matching live evidence is still required. A
+failed REST request or command timeout preserves the latest valid displayed
+state. Complete disagreement explicitly publishes Unknown. Disconnect clears
+the latest observation, makes the entity unavailable, wakes waiters to fail,
+and cancels the bounded burst task; reconnect increments the connection
+generation and begins new startup hydration.
 
 RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at
 most one active task and one trailing request per reader, tracks at most 64

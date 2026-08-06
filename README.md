@@ -30,10 +30,10 @@ endorsed by, or supported by GRIT or GRIT Automation.
   updates, and post-command MQTT confirmation.
 - One RFID lock entity per reader, using authoritative individual REST state and
   event-driven MQTT invalidation refresh.
-- One system-wide GRITLock entity using bounded trigger MQTT consensus. `gls=1`
-  means locked and `gls=0` means unlocked; REST participant metadata selects
-  triggers but never supplies displayed state. Until valid MQTT authority
-  settles, the entity remains Unknown and unavailable.
+- One system-wide GRITLock entity using one continuous bounded MQTT observed-
+  state channel. `gls=1` means locked and `gls=0` means unlocked. Live `/gl`
+  bursts use their fresh `gte=1` subset, or all fresh observations when every
+  `gte=0`; REST never supplies displayed state or redefines a live burst.
 - Collector, solenoid, latch, and powerbank switches, with deterministic
   individual-detail confirmation for collectors.
 - Hub connectivity, software, device-count, MQTT, and per-device diagnostics.
@@ -64,9 +64,12 @@ text; `/req-tel` is never state. GRITLock instead opens one bounded
 current-connection snapshot as soon as MQTT is ready. Strict trigger `/sts` or
 `/tel` `gls` received during that window may hydrate state without being
 caused by one particular REST request; `/tel` without `gls` is ignored.
-Refresh requests are best-effort stimuli, and startup status remains separate
-from `/gl` command confirmation. The integration does not publish MQTT or
-operate equipment during startup hydration.
+Refresh requests are best-effort stimuli. Startup status and naturally settled
+live `/gl` bursts publish through the same displayed-state field, but only a
+fresh `live_gl` observation newer than a pre-command sequence boundary can
+confirm explicit Lock or Unlock. There are no command generation IDs or retained
+command-result map. The integration does not publish MQTT or operate equipment
+during startup hydration.
 
 ## Entity summary
 

@@ -104,33 +104,50 @@ The correction opens a bounded snapshot synchronously at exact matching-SUBACK
 readiness. It accepts strict `/sts` or `/tel` `gls` from that MQTT connection
 before, during, or after best-effort refresh completion. `/tel` without `gls`
 does not enter the snapshot. Complete REST participant metadata still takes
-precedence; otherwise the quiet-settled set of unique known triggers that
-actually reported valid `gls` is the bounded fallback. This status authority
-never enters or confirms a `/gl` command generation, and a command boundary
-closes any unsettled startup snapshot.
+precedence for startup only; otherwise the quiet-settled set of unique known
+triggers that actually reported valid `gls` is the bounded fallback. This
+startup source can display state but cannot confirm Lock or Unlock. The first
+accepted live `/gl` frame closes any unsettled startup snapshot.
 
-## Corrective process
+## v0.1.2 observed-state refactor
 
-The published v0.1.1 release is superseded by the v0.1.2 corrective
-process. The safe per-generation fallback is:
+The architectural audit concluded that displayed state and command confirmation
+must not use separate authority structures. The v0.1.2 candidate now retains one
+latest immutable GRITLock observation containing state, MQTT connection
+generation, first and last supporting receive sequence, bounded source, and at
+most 64 participant IDs. Startup status and live `/gl` consensus publish through
+that same displayed-state field. Command generation IDs, retained generation
+results, and command-owned state have been removed.
 
-1. Use a nonempty, complete, valid REST `gritLockEnabled` participant set
-   when available.
-2. Otherwise, after quiet settlement, use exactly the fresh `gte=1` trigger IDs
-   if that subset is nonempty.
-3. If no fresh observation has `gte=1`, use all unique triggers observed in that
-   fresh generation.
-4. Never persist MQTT-derived participant IDs into an unrelated generation.
+The continuous live `/gl` evaluator uses only each fresh quiet-settled burst. If
+any fresh frame has `gte=1`, exactly that subset participates. If every fresh
+frame has `gte=0`, all fresh observed triggers participate, including the sparse
+one-frame Unlock pattern captured on Dion's installation and the six-trigger
+pattern captured on Jeff's installation. REST participant metadata cannot
+mutate or redefine live evidence. Selected disagreement publishes Unknown;
+malformed, incomplete, overflowing, or unsettled evidence preserves prior valid
+state.
 
-Those rules apply to `/gl` command generations. The startup snapshot separately
-uses exact REST participants when available, or the bounded quiet-settled set of
-current-connection status reporters when REST metadata is empty or unusable.
+Startup remains a separate bounded evidence source, not a second state field.
+Current-connection strict `/sts` or `/tel` `gls` can publish displayed state
+through the same observation record. `/tel` without `gls` is ignored. A startup
+observation cannot confirm a command, and reconnect rejects old evidence.
 
-Both installations require explicit GRITLock startup, Lock, and Unlock
-retesting of the corrected command-confirmation and immediate entity-state path before v0.1.2 publication.
-The original fail-closed bounds, ordering, cancellation, disconnect, overflow,
-timeout, and stale-generation requirements remain release gates.
+Lock and Unlock still send explicit desired state to `PUT /api/hub/lockout`.
+The entity captures MQTT connection generation and receive sequence before REST,
+then waits against the latest observation for a matching naturally settled
+`live_gl` result supported entirely by newer receive sequences. The waiter
+checks before and after registration, so an observation received while REST is
+awaiting is eligible without a lost wakeup. HTTP success, displayed state,
+startup status, stale evidence, opposite state, disagreement, disconnect,
+reconnect, timeout, and cancellation all fail closed. No-op commands still send
+REST and require fresh matching evidence.
 
+Both installations require explicit GRITLock startup, Lock, Unlock,
+confirmation, and immediate entity-state retesting before v0.1.2 publication.
+Gate and RFID architecture and behavior were not changed by this refactor. The
+original boundedness, privacy, cancellation, disconnect, overflow, timeout, and
+ordering requirements remain release gates.
 ## Original automated validation
 
 The v0.1.1 release-preparation validation on 2026-08-05 was network-free:
@@ -147,21 +164,21 @@ do not make the superseded candidate acceptable for publication.
 
 ## Current corrective automated validation
 
-The v0.1.2 state-pipeline and startup-hydration corrections were validated
-without API, MQTT, Home Assistant, or physical-device access:
+The v0.1.2 continuous observed-state refactor was validated without API, MQTT,
+Home Assistant, network, or physical-device access:
 
-- 299 focused API, MQTT lifecycle/readiness, runtime ordering, coordinator, gate,
-  RFID, GRITLock, and startup-hydration regression tests passed.
+- 10 end-to-end GRITLock parser/coordinator/entity pipeline tests passed.
+- 58 coordinator MQTT ingestion and continuous-state tests passed.
+- 60 coordinator reconciliation, waiter, disconnect, reconnect, and unload tests
+  passed.
 - 22 dedicated startup-hydration tests passed.
 - 11 documentation tests passed.
-- 406 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
-- 33 Python files compiled in memory and parsed as AST.
-- 3 JSON files and 7 YAML files parsed successfully.
-- `git diff --check` and the changed-file sensitive-value scan passed.
+- 401 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
+- Python compilation/AST, JSON/YAML parsing, `git diff --check`, and the
+  sensitive-value scan passed.
 
 These automated results do not replace the required Lock and Unlock acceptance
 on both live systems.
-
 ## Publication state
 
 `v0.1.1` was published on 2026-08-05 and is the latest published release. The

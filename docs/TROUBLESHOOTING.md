@@ -91,40 +91,36 @@ state. Exact `s` and `st` messages only trigger a bounded individual refresh.
 An offline reader is unavailable; temporary read failures retain the last valid
 state rather than inventing one. The default poll is a 30-second fallback.
 
-## GRITLock is Unknown
+## GRITLock is Unknown or does not confirm
 
-GRITLock uses `gls` from exact current-generation `/gl` messages as its
-ongoing and command-confirmation authority: `gls=1` is Locked and `gls=0` is
-Unlocked. Exact zero is a valid state and is not treated as missing. At startup
-or reconnect, exact MQTT readiness opens a bounded current-connection snapshot.
-Strict `gls` from trigger `/sts` or `/tel` can hydrate the same displayed
-state even when it was not caused by one individual REST refresh. `/tel`
-without `gls` is ignored. Best-effort refresh completion alone is not state
-evidence, and startup status cannot confirm a command.
-A nonempty, complete, valid REST `gritLockEnabled` set defines required
-participants when available. A complete list with no enabled triggers is not a
-usable participant set. Without usable REST metadata, two firmware patterns are
-supported per fresh quiet-settled generation: a mixed burst uses exactly the
-triggers reporting `gte=1`, while an all-`gte=0` burst uses every fresh observed
-trigger. The choice is not carried into later generations.
+GRITLock has one continuous observed-state channel. Exact `gls=1` is Locked,
+`gls=0` is Unlocked, and zero is not treated as missing. At startup or reconnect,
+a bounded current-connection snapshot accepts strict trigger `/sts` or `/tel`
+`gls`; `/tel` without `gls` is ignored. Startup status can display state but
+cannot confirm a later command.
 
-Zero observations, participant-limit overflow, missing REST-required messages,
-stale evidence, timeout, cancellation, generation replacement, or an unsettled
-generation fails that generation without erasing an earlier valid MQTT state.
-A complete participant disagreement invalidates authority. Timeout never
-settles a partial generation. After MQTT disconnect, or before the first valid
-settlement, GRITLock is Unknown and unavailable; REST `gritLockState` is not a
-displayed fallback.
+Live `/gl` bursts choose participants only from their fresh frames. A mixed
+burst uses exactly the fresh `gte=1` subset. An all-`gte=0` burst uses all fresh
+observed triggers, including one sparse valid frame. REST participant metadata
+may bound startup hydration but cannot redefine live evidence. Selected
+participants must agree on `gls`; complete disagreement makes the entity Unknown.
+Malformed, incomplete, overflowing, timed-out, or unsettled live evidence
+preserves an earlier valid state and publishes no new authority.
 
-PR #28 corrected gate startup hydration and preserved RFID startup behavior; the
-exact merged build passed both paths on Dion's installation. GRITLock remained
-Unknown because its otherwise valid current-connection `/sts gls` evidence was
-still coupled to individual refresh timing. The v0.1.2 correction remains
-blocked until GRITLock startup, Lock, Unlock, confirmation, and immediate state
-pass on Dion's and Jeff's systems, with gate and RFID regressions rechecked.
-Until then, if equipment changes but Home Assistant reports failed confirmation,
-do not repeat commands; verify the physical site safely and retain only redacted
-logs.
+Lock and Unlock capture MQTT connection and receive-sequence boundaries before
+the explicit REST request. Confirmation needs a naturally settled matching
+`live_gl` observation whose supporting frames are all newer than that boundary.
+HTTP success, the displayed state, startup status, stale evidence, an opposite
+state, timeout, disconnect, or reconnect cannot confirm. A frame arriving while
+the REST request is still awaiting remains eligible. No-op requests also require
+fresh evidence; there are no command generation IDs or retained result map.
+
+If physical equipment changes but Home Assistant reports failed confirmation,
+do not repeat the command. Verify the site safely and retain only redacted logs.
+For v0.1.2, GRITLock startup, Lock, Unlock, confirmation, and immediate state
+remain blocked pending live acceptance on Dion's and Jeff's systems. Gate and
+RFID behavior was not changed by this refactor and must remain green during that
+acceptance.
 
 ## Collector command waits or fails
 
