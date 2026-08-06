@@ -75,36 +75,59 @@ Live testing of exact merged main commit `9cd5807` proved that RFID readers
 hydrated successfully while gates and GRITLock remained Unknown after startup.
 A bounded broad-topic diagnostic established the relevant message families
 without retaining installation identifiers or payloads: gate `/sts`, `/mv`,
-`/mv-d`, `/p`, `/req-tel`, and `/tel`, plus trigger `/sts` and `/gl`. The
-defect was not
-MQTT readiness or entity identity. Reconciliation issued targeted REST
-telemetry requests but treated HTTP completion as success, never waited for the
+`/mv-d`, `/p`, `/req-tel`, and `/tel`, plus trigger `/sts` and `/gl`. The defect was not MQTT readiness or entity identity.
+Reconciliation issued targeted REST telemetry requests but treated HTTP completion as success, never waited for the
 fresh MQTT response, rejected gate `p` when firmware encoded it as numeric text,
 and ignored trigger startup `gls` outside `/gl` generations.
 
-The corrective startup pass now begins only after exact matching SUBACK
-readiness. It sends bounded authenticated per-target telemetry requests, waits
-for fresh requested `/sts` or `/tel`, and treats `/req-tel` only as a request
-marker. Gate state enters the established per-device MQTT path. A complete
-unanimous trigger startup set hydrates GRITLock authority without entering or
-confirming a `/gl` command generation. RFID remains authoritative from strict
-individual REST detail. Missing or invalid responses fail closed per target and
-do not erase state accepted for another device.
+PR #28 then made gate startup wait for its bounded requested `/sts` or `/tel`
+response, retained RFID's strict individual REST authority, and also required
+each GRITLock trigger status to follow its own refresh request. That exact
+per-request trigger rule was conservative but depended on a response guarantee
+the live backend does not provide.
+
+## Post-PR #28 startup-correlation result
+
+Live testing of exact merged commit `4778958` proved that all gates hydrated,
+RFID startup remained correct, and GRITLock alone stayed Unknown and
+unavailable. A fresh current-connection capture contained `/sts` for all
+relevant GRITLock-capable triggers with unanimous `gls=1`. One later Refresh
+All produced only one `/tel`, without `gls`, and did not change state. No
+installation identifiers or raw payloads are retained in this report.
+
+The remaining cause was strict causal correlation: the GRITLock session opened
+inside the asynchronous request pass and rejected otherwise valid status until
+that exact trigger had been marked requested. It then waited for an individual
+post-request `gls` that the mesh refresh endpoint does not guarantee.
+
+The correction opens a bounded snapshot synchronously at exact matching-SUBACK
+readiness. It accepts strict `/sts` or `/tel` `gls` from that MQTT connection
+before, during, or after best-effort refresh completion. `/tel` without `gls`
+does not enter the snapshot. Complete REST participant metadata still takes
+precedence; otherwise the quiet-settled set of unique known triggers that
+actually reported valid `gls` is the bounded fallback. This status authority
+never enters or confirms a `/gl` command generation, and a command boundary
+closes any unsettled startup snapshot.
 
 ## Corrective process
 
 The published v0.1.1 release is superseded by the v0.1.2 corrective
 process. The safe per-generation fallback is:
 
-1. Use a nonempty, complete, valid REST `gritLockEnabled` participant set when available.
+1. Use a nonempty, complete, valid REST `gritLockEnabled` participant set
+   when available.
 2. Otherwise, after quiet settlement, use exactly the fresh `gte=1` trigger IDs
    if that subset is nonempty.
 3. If no fresh observation has `gte=1`, use all unique triggers observed in that
    fresh generation.
 4. Never persist MQTT-derived participant IDs into an unrelated generation.
 
-Both installations require explicit Lock and Unlock retesting of the corrected
-command-confirmation and immediate entity-state path before v0.1.2 publication.
+Those rules apply to `/gl` command generations. The startup snapshot separately
+uses exact REST participants when available, or the bounded quiet-settled set of
+current-connection status reporters when REST metadata is empty or unusable.
+
+Both installations require explicit GRITLock startup, Lock, and Unlock
+retesting of the corrected command-confirmation and immediate entity-state path before v0.1.2 publication.
 The original fail-closed bounds, ordering, cancellation, disconnect, overflow,
 timeout, and stale-generation requirements remain release gates.
 
@@ -127,17 +150,18 @@ do not make the superseded candidate acceptable for publication.
 The v0.1.2 state-pipeline and startup-hydration corrections were validated
 without API, MQTT, Home Assistant, or physical-device access:
 
-- 287 focused API, MQTT lifecycle/readiness, runtime ordering, coordinator, gate,
+- 299 focused API, MQTT lifecycle/readiness, runtime ordering, coordinator, gate,
   RFID, GRITLock, and startup-hydration regression tests passed.
-- 10 dedicated startup-hydration tests passed.
+- 22 dedicated startup-hydration tests passed.
 - 11 documentation tests passed.
-- 394 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
+- 406 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
 - 33 Python files compiled in memory and parsed as AST.
 - 3 JSON files and 7 YAML files parsed successfully.
 - `git diff --check` and the changed-file sensitive-value scan passed.
 
 These automated results do not replace the required Lock and Unlock acceptance
 on both live systems.
+
 ## Publication state
 
 `v0.1.1` was published on 2026-08-05 and is the latest published release. The

@@ -100,14 +100,18 @@ Runtime startup reconciliation begins only after the exact successful matching
 SUBACK has made MQTT ready. It sends bounded authenticated
 `POST /api/device/mesh-telemetry/refresh/{type}/{id}` requests for each known
 gate, RFID reader, and eligible GRITLock trigger, with no MQTT publish and no
-device command. Gate and trigger requests wait for a fresh response newer than
-their request boundary. A device may first expose `/req-tel`; that suffix is a
-request marker and is never state. Fresh `/sts` and `/tel` are accepted response
-suffixes. Per-target waits, the overall pass, target count, and request
-concurrency are bounded. One missing response makes the pass incomplete without
-erasing state already accepted for another device. Reconnect opens a new
-connection-scoped pass; disconnect, unload, and failed setup invalidate it and
-wake its waiters.
+device command. Gates retain an exact response boundary for fresh `/sts` or
+`/tel`; `/req-tel` is a request marker and never gate state. Per-target gate
+waits, the overall pass, target count, and request concurrency are bounded.
+
+GRITLock collection opens synchronously with the ready MQTT connection, before
+the asynchronous refresh pass can send a request. Trigger refreshes are
+best-effort stimuli: REST completion is not state evidence and no individual
+request is assumed to cause a matching status response. Any strict binary
+`gls` from trigger `/sts` or `/tel` received inside the bounded current-
+connection window may enter its snapshot. `/tel` without `gls` does not count.
+Reconnect creates a new snapshot; disconnect, unload, and failed setup cancel
+the window and prevent evidence crossing connection generations.
 
 The coordinator forwards only the fixed platform list: `sensor`,
 `binary_sensor`, `switch`, `cover`, `button`, `lock`, and `number`. Failed setup
@@ -122,7 +126,7 @@ supported Home Assistant APIs, and reloads once.
 | --- | --- |
 | Gate | MQTT live state, including fresh requested `/sts` or `/tel` startup telemetry; REST never supplies gate state |
 | RFID | Strict individual `GET /api/rfid/{id}` boolean `state`; exact MQTT `s`/`st` only invalidates and requests refresh |
-| GRITLock | Fresh unanimous requested trigger `/sts` or `/tel` at startup, then settled MQTT `/gl` generations; REST selects participants but does not supply displayed state |
+| GRITLock | Bounded current-connection trigger `/sts` or `/tel` `gls` snapshot at startup, then settled MQTT `/gl` generations; REST selects participants but does not supply displayed state |
 | Collector | Strict individual `GET /api/collector/{id}` detail; proven MQTT may supplement displayed state |
 | Collections | Discovery/inventory, except existing generic switch reconciliation where specifically implemented |
 
@@ -173,22 +177,34 @@ Disconnect clears MQTT authority. With no valid authority the state is Unknown
 and its entity is unavailable. REST `gritLockState` is not used as a displayed
 fallback because the inventory response has no proven state-freshness contract.
 
-At startup or reconnect, each eligible trigger is requested only after MQTT is
-ready. Exact binary `gls` from its fresh `/sts` or `/tel` response is collected
-in the connection-scoped startup pass. A complete unanimous participant set may
-hydrate Locked or Unlocked; missing, invalid, contradictory, stale,
-pre-request, or post-cleanup input fails closed. This startup status does not
-create a `/gl` generation, is not stored in command-generation results, and
-cannot confirm Lock or Unlock. Later valid `/gl` generations retain their
-normal live-state and command-confirmation authority.
+At startup or reconnect, the exact matching SUBACK opens one bounded
+connection-scoped status snapshot. Exact binary `gls` from trigger `/sts` or
+`/tel` may arrive before, during, or after an individual best-effort refresh
+request; only MQTT readiness and the current connection generation define the
+boundary. `/tel` without `gls`, invalid values, pre-readiness observations, and
+prior-connection evidence are ignored. The latest valid scalar per trigger
+replaces only that trigger's earlier snapshot value.
+
+A nonempty complete REST `gritLockEnabled=true` set requires exactly those
+participants and ignores nonparticipants. If REST metadata is empty or unusable,
+the bounded set of unique known triggers that actually report valid `gls`
+during the window becomes the fallback participant set after a natural quiet
+period; unrelated inventory entries without `gls` are not required. Unanimous
+one means Locked, unanimous zero means Unlocked, and complete disagreement
+invalidates authority. Insufficient or overflowing evidence remains Unknown
+without erasing an already valid state. Startup status does not create or enter
+a `/gl` generation or command-generation results, and cannot confirm Lock or
+Unlock. Opening a command generation closes any unsettled startup snapshot.
+Later valid `/gl` generations retain their normal
+live-state and command-confirmation authority.
 
 RFID MQTT event refresh is debounced at approximately 250 milliseconds, has at
 most one active task and one trailing request per reader, tracks at most 64
 readers, and shares a four-request concurrency limit. Gate/RFID reconnect
-telemetry requests and trigger startup requests are similarly bounded and
-coalesced. RFID continues to hydrate from its strict individual REST detail;
-MQTT payload values do not replace that authority. Cancellation propagates; no
-detached work should continue after unload.
+telemetry requests and best-effort trigger startup requests are similarly
+bounded and coalesced. RFID continues to hydrate from its strict individual REST
+detail; MQTT payload values do not replace that authority. Cancellation
+propagates; no detached work should continue after unload.
 
 ## Privacy boundary
 

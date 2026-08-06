@@ -17,7 +17,10 @@ published on 2026-08-05; v0.1.2 is not tagged or published.
 - [x] Exact merged `9cd5807` build reproduced Unknown gate and GRITLock startup while RFID hydrated
 - [x] Startup response families and ordering audited without retaining installation data
 - [x] Bounded post-SUBACK request/response hydration implemented and tested offline
-- [ ] Corrective v0.1.2 Lock, Unlock, confirmation, and immediate entity state pass on both installations
+- [x] Exact merged PR #28 passed gate and RFID startup on Dion's installation
+- [x] Exact merged PR #28 left GRITLock Unknown despite unanimous current-connection `/sts gls=1`
+- [x] Strict per-request GRITLock startup correlation defect identified and corrected offline
+- [ ] Corrective v0.1.2 GRITLock startup, Lock, Unlock, confirmation, and immediate entity state pass on both installations
 
 ## Corrective validation
 
@@ -37,7 +40,9 @@ published on 2026-08-05; v0.1.2 is not tagged or published.
 - [ ] Jeff GRITLock Lock succeeds with all-`gte=0`, `gls=1`
 - [ ] Jeff GRITLock Unlock succeeds with all-`gte=0`, `gls=0`
 - [ ] Clean corrected build installed on Dion's system
-- [ ] Dion gate startup state hydrates for every responding gate
+- [x] PR #28 Dion gate startup state hydrated for every responding gate
+- [x] PR #28 Dion RFID startup/detail authority remained correct
+- [ ] Dion GRITLock startup `/sts gls=1` snapshot displays Locked and offers Unlock
 - [ ] Dion startup all-`gte=0`, `gls=0` displays Unlocked and offers Lock
 - [ ] Dion mixed `gte=1`, `gls=1` generation displays Locked and offers Unlock
 - [ ] Dion fresh all-`gte=0`, `gls=0` Unlock confirms and displays Unlocked

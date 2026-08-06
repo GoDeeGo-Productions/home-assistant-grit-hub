@@ -85,6 +85,8 @@ _MAX_CONFIRM_TIMEOUT = REST_DISCOVERY_TIMEOUT * 6
 _GRITLOCK_SETTLE_TIME = 0.25
 _MAX_GRITLOCK_OBSERVATIONS = 64
 _MAX_GRITLOCK_GENERATION_RESULTS = 8
+_GRITLOCK_STARTUP_WINDOW = _RECONCILIATION_RESPONSE_TIMEOUT
+_GRITLOCK_STARTUP_QUIET_TIME = _GRITLOCK_SETTLE_TIME
 _MAX_MQTT_STATE_WAITERS = 64
 
 _INVALID = object()
@@ -124,15 +126,30 @@ class _SettledGritlockGeneration:
 
 @dataclass(slots=True)
 class _StartupHydration:
-    """One connection-scoped, request-bounded startup hydration pass."""
+    """One request-bounded gate startup hydration pass."""
 
     connection_generation: int
     after_sequence: int
-    expected_triggers: frozenset[str]
     requested_targets: set[tuple[str, str]]
     observed_targets: set[tuple[str, str]]
-    trigger_states: dict[str, bool]
     response_events: dict[tuple[str, str], asyncio.Event]
+
+
+@dataclass(slots=True)
+class _GritlockStartupSnapshot:
+    """Bounded status evidence from one ready MQTT connection."""
+
+    connection_generation: int
+    after_sequence: int
+    rest_participants: frozenset[str]
+    rest_participants_usable: bool
+    fallback_candidates: frozenset[str]
+    fallback_usable: bool
+    observations: dict[str, bool]
+    updated: asyncio.Event
+    deadline_monotonic: float
+    last_received_monotonic: float | None = None
+    overflowed: bool = False
 
 
 def _bounded_text(value: Any, maximum: int) -> str | None:
@@ -557,6 +574,10 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._reconcile_again = False
         self._reconciliation_enabled = True
         self._startup_hydration: _StartupHydration | None = None
+        self._gritlock_startup_snapshot: (
+            _GritlockStartupSnapshot | None
+        ) = None
+        self._gritlock_startup_task: asyncio.Task[None] | None = None
         self._telemetry_request_tasks: dict[
             tuple[str, str], asyncio.Task[None]
         ] = {}
@@ -1628,6 +1649,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or after_sequence != self._mqtt_receive_sequence
         ):
             return None
+        self._clear_gritlock_startup_snapshot()
         self._cancel_gritlock_settle_task()
         generation = self._new_gritlock_generation(after_sequence)
         # A new explicit command invalidates any incomplete prior generation.
@@ -1786,7 +1808,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self,
         session: _StartupHydration | None = None,
     ) -> None:
-        """Invalidate one startup pass and release all bounded waiters."""
+        """Invalidate one gate startup pass and release bounded waiters."""
         current = self._startup_hydration
         if current is None or (session is not None and current is not session):
             return
@@ -1803,7 +1825,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         updates: dict[str, Any] | None,
         receive_sequence: int,
     ) -> tuple[bool, bool]:
-        """Return whether a requested response and state change were accepted."""
+        """Accept one gate response causally bounded by its REST request."""
         session = self._startup_hydration
         target = (device_type, device_id)
         if (
@@ -1812,51 +1834,25 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             != self._mqtt_connection_generation
             or receive_sequence <= session.after_sequence
             or target not in session.requested_targets
+            or device_type != "gate"
+            or root_message_type not in _GATE_STARTUP_RESPONSE_TYPES
+            or not isinstance(updates, dict)
+            or not isinstance(updates.get("open"), bool)
         ):
-            return False, False
-
-        state_changed = False
-        if device_type == "gate":
-            if (
-                root_message_type not in _GATE_STARTUP_RESPONSE_TYPES
-                or not isinstance(updates, dict)
-                or not isinstance(updates.get("open"), bool)
-            ):
-                return False, False
-        elif device_type == "trigger":
-            if (
-                root_message_type not in _GRITLOCK_STARTUP_RESPONSE_TYPES
-                or device_id not in session.expected_triggers
-            ):
-                return False, False
-            locked = _strict_binary_bool(payload.get("gls", _INVALID))
-            if locked is _INVALID:
-                return False, False
-            session.trigger_states[device_id] = locked
-            if session.expected_triggers.issubset(session.trigger_states):
-                states = {
-                    session.trigger_states[trigger_id]
-                    for trigger_id in session.expected_triggers
-                }
-                authoritative = next(iter(states)) if len(states) == 1 else None
-                if self._gritlock_authoritative_state is not authoritative:
-                    self._gritlock_authoritative_state = authoritative
-                    state_changed = True
-        else:
             return False, False
 
         session.observed_targets.add(target)
         event = session.response_events.get(target)
         if event is not None:
             event.set()
-        return True, state_changed
+        return True, False
 
     async def _async_wait_startup_response(
         self,
         session: _StartupHydration,
         target: tuple[str, str],
     ) -> bool:
-        """Wait for one exact response without retaining its raw payload."""
+        """Wait for one exact gate response without retaining raw payload."""
         if target in session.observed_targets:
             return True
         event = session.response_events.get(target)
@@ -1878,6 +1874,261 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and target in session.observed_targets
         )
 
+    def _gritlock_startup_participants(
+        self,
+    ) -> tuple[
+        frozenset[str],
+        bool,
+        frozenset[str],
+        bool,
+    ]:
+        """Return REST participants and bounded fallback candidates."""
+        data = self.data if isinstance(self.data, dict) else {}
+        devices = data.get("devices")
+        rest_participants, rest_usable = self._rest_gritlock_participants(
+            devices
+        )
+        triggers = (
+            devices.get("trigger") if isinstance(devices, dict) else None
+        )
+        if not isinstance(triggers, list):
+            return rest_participants, rest_usable, frozenset(), False
+
+        identifiers = [_telemetry_identifier(trigger) for trigger in triggers]
+        counts = Counter(
+            identifier for identifier in identifiers if identifier is not None
+        )
+        candidates = [
+            identifier
+            for identifier in identifiers
+            if identifier is not None and counts[identifier] == 1
+        ]
+        fallback_usable = (
+            bool(candidates)
+            and len(candidates) <= _MAX_GRITLOCK_OBSERVATIONS
+        )
+        return (
+            rest_participants,
+            rest_usable,
+            frozenset(candidates) if fallback_usable else frozenset(),
+            fallback_usable,
+        )
+
+    def _begin_gritlock_startup_snapshot(self) -> None:
+        """Open one bounded collection window after MQTT readiness."""
+        self._clear_gritlock_startup_snapshot()
+        if not self._reconciliation_enabled or not self._mqtt_connected:
+            return
+        (
+            rest_participants,
+            rest_usable,
+            fallback_candidates,
+            fallback_usable,
+        ) = self._gritlock_startup_participants()
+        snapshot = _GritlockStartupSnapshot(
+            connection_generation=self._mqtt_connection_generation,
+            after_sequence=self._mqtt_receive_sequence,
+            rest_participants=rest_participants,
+            rest_participants_usable=rest_usable,
+            fallback_candidates=fallback_candidates,
+            fallback_usable=fallback_usable,
+            observations={},
+            updated=asyncio.Event(),
+            deadline_monotonic=(
+                time.monotonic() + _GRITLOCK_STARTUP_WINDOW
+            ),
+        )
+        self._gritlock_startup_snapshot = snapshot
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._gritlock_startup_task = asyncio.create_task(
+            self._async_collect_gritlock_startup(snapshot)
+        )
+
+    def _clear_gritlock_startup_snapshot(
+        self,
+        snapshot: _GritlockStartupSnapshot | None = None,
+    ) -> None:
+        """Invalidate current-connection status evidence and its task."""
+        current = self._gritlock_startup_snapshot
+        if current is None or (
+            snapshot is not None and current is not snapshot
+        ):
+            return
+        self._gritlock_startup_snapshot = None
+        current.updated.set()
+        task = self._gritlock_startup_task
+        self._gritlock_startup_task = None
+        if task is None or task.done():
+            return
+        try:
+            active_task = asyncio.current_task()
+        except RuntimeError:
+            active_task = None
+        if task is not active_task:
+            task.cancel()
+
+    def _settle_gritlock_startup_snapshot(
+        self,
+        snapshot: _GritlockStartupSnapshot,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Publish one complete exact startup consensus at a safe boundary."""
+        if (
+            self._gritlock_startup_snapshot is not snapshot
+            or snapshot.connection_generation
+            != self._mqtt_connection_generation
+            or not self._mqtt_connected
+            or snapshot.overflowed
+        ):
+            return False
+
+        if snapshot.rest_participants_usable:
+            participants = snapshot.rest_participants
+            if not participants.issubset(snapshot.observations):
+                return False
+        else:
+            current_time = time.monotonic() if now is None else now
+            if (
+                not snapshot.fallback_usable
+                or not snapshot.observations
+                or snapshot.last_received_monotonic is None
+                or current_time - snapshot.last_received_monotonic
+                < _GRITLOCK_STARTUP_QUIET_TIME
+            ):
+                return False
+            participants = frozenset(snapshot.observations)
+
+        states = {
+            snapshot.observations[trigger_id]
+            for trigger_id in participants
+        }
+        authoritative = next(iter(states)) if len(states) == 1 else None
+        changed = self._gritlock_authoritative_state is not authoritative
+        self._gritlock_authoritative_state = authoritative
+        self._gritlock_startup_snapshot = None
+        snapshot.updated.set()
+        if changed:
+            self.async_update_listeners()
+        self._wake_mqtt_state_waiters()
+        return True
+
+    def _record_gritlock_startup_observation(
+        self,
+        device_id: str,
+        root_message_type: str,
+        payload: dict[str, Any],
+        receive_sequence: int,
+    ) -> bool:
+        """Retain one strict scalar status for the active connection only."""
+        snapshot = self._gritlock_startup_snapshot
+        if (
+            snapshot is None
+            or snapshot.connection_generation
+            != self._mqtt_connection_generation
+            or receive_sequence <= snapshot.after_sequence
+            or root_message_type not in _GRITLOCK_STARTUP_RESPONSE_TYPES
+        ):
+            return False
+
+        locked = _strict_binary_bool(payload.get("gls", _INVALID))
+        if locked is _INVALID:
+            return False
+        if snapshot.rest_participants_usable:
+            if device_id not in snapshot.rest_participants:
+                return False
+        elif (
+            not snapshot.fallback_usable
+            or device_id not in snapshot.fallback_candidates
+        ):
+            return False
+
+        if (
+            device_id not in snapshot.observations
+            and len(snapshot.observations) >= _MAX_GRITLOCK_OBSERVATIONS
+        ):
+            snapshot.overflowed = True
+            snapshot.updated.set()
+            self._clear_gritlock_startup_snapshot(snapshot)
+            return False
+
+        snapshot.observations[device_id] = locked
+        snapshot.last_received_monotonic = time.monotonic()
+        snapshot.updated.set()
+        if (
+            snapshot.rest_participants_usable
+            and snapshot.rest_participants.issubset(snapshot.observations)
+        ):
+            self._settle_gritlock_startup_snapshot(snapshot)
+        return True
+
+    async def _async_collect_gritlock_startup(
+        self,
+        snapshot: _GritlockStartupSnapshot,
+    ) -> None:
+        """Quiet-settle fallback evidence or expire the bounded window."""
+        active_task = asyncio.current_task()
+        timed_out = False
+        try:
+            while (
+                self._gritlock_startup_snapshot is snapshot
+                and self._reconciliation_enabled
+                and self._mqtt_connected
+                and snapshot.connection_generation
+                == self._mqtt_connection_generation
+            ):
+                snapshot.updated.clear()
+                current_time = time.monotonic()
+                if self._settle_gritlock_startup_snapshot(
+                    snapshot,
+                    now=current_time,
+                ):
+                    return
+                if snapshot.overflowed:
+                    return
+                remaining = snapshot.deadline_monotonic - current_time
+                if remaining <= 0:
+                    timed_out = True
+                    return
+                wait_timeout = remaining
+                if (
+                    not snapshot.rest_participants_usable
+                    and snapshot.last_received_monotonic is not None
+                ):
+                    quiet_remaining = _GRITLOCK_STARTUP_QUIET_TIME - (
+                        current_time - snapshot.last_received_monotonic
+                    )
+                    wait_timeout = min(
+                        wait_timeout,
+                        max(0.0, quiet_remaining),
+                    )
+                try:
+                    await asyncio.wait_for(
+                        snapshot.updated.wait(),
+                        timeout=wait_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            if self._gritlock_startup_snapshot is snapshot:
+                self._gritlock_startup_snapshot = None
+            if self._gritlock_startup_task is active_task:
+                self._gritlock_startup_task = None
+            if (
+                timed_out
+                and self._reconciliation_enabled
+                and self._mqtt_connected
+                and snapshot.connection_generation
+                == self._mqtt_connection_generation
+                and self._gritlock_authoritative_state is None
+            ):
+                _LOGGER.warning(
+                    "GRITLock startup state hydration was incomplete"
+                )
+
     def set_mqtt_connected(self, connected: bool) -> bool:
         """Update broker state on the event loop and notify once per change."""
         if not isinstance(connected, bool):
@@ -1886,7 +2137,9 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         self._mqtt_connection_generation += 1
         self._mqtt_connected = connected
-        if not connected:
+        if connected:
+            self._begin_gritlock_startup_snapshot()
+        else:
             self.cancel_state_reconciliation()
             self._cancel_rfid_event_refreshes()
             self._reset_gritlock_mqtt_state()
@@ -1918,6 +2171,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Cancel any in-flight telemetry reconciliation pass."""
         self._reconcile_again = False
         self._clear_startup_hydration()
+        self._clear_gritlock_startup_snapshot()
         task = self._reconciliation_task
         if task is not None and not task.done():
             task.cancel()
@@ -1925,6 +2179,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_stop_state_reconciliation(self) -> None:
         """Cancel and await telemetry work during unload or failed setup."""
         self._reconciliation_enabled = False
+        startup_task = self._gritlock_startup_task
         self.cancel_state_reconciliation()
         event_tasks = tuple(set(self._rfid_event_tasks.values()))
         self._cancel_rfid_event_refreshes()
@@ -1936,6 +2191,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         task = self._reconciliation_task
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
+        if startup_task is not None:
+            await asyncio.gather(startup_task, return_exceptions=True)
         telemetry_tasks = tuple(set(self._telemetry_request_tasks.values()))
         for telemetry_task in telemetry_tasks:
             if not telemetry_task.done():
@@ -2043,17 +2300,13 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         truncated = len(targets) > _RECONCILIATION_MAX_TARGETS
         targets = targets[:_RECONCILIATION_MAX_TARGETS]
         response_targets = {
-            target
-            for target in targets
-            if target[0] in {"gate", "trigger"}
+            target for target in targets if target[0] == "gate"
         }
         session = _StartupHydration(
             connection_generation=self._mqtt_connection_generation,
             after_sequence=self._mqtt_receive_sequence,
-            expected_triggers=expected_triggers,
             requested_targets=set(),
             observed_targets=set(),
-            trigger_states={},
             response_events={
                 target: asyncio.Event() for target in response_targets
             },
@@ -2087,7 +2340,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise
             except Exception:
                 return False
-            if device_type == "rfid":
+            if device_type in {"rfid", "trigger"}:
                 return True
             return await self._async_wait_startup_response(session, target)
 
@@ -2538,6 +2791,22 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and normalized_message_type in {"s", "st"}
             and self._schedule_rfid_event_refresh(normalized_device_id)
         )
+        gritlock_startup_accepted = False
+        if (
+            device_type == "trigger"
+            and root_message_type in _GRITLOCK_STARTUP_RESPONSE_TYPES
+        ):
+            receive_sequence = self._mqtt_receive_sequence + 1
+            gritlock_startup_accepted = (
+                self._record_gritlock_startup_observation(
+                    normalized_device_id,
+                    root_message_type,
+                    payload,
+                    receive_sequence,
+                )
+            )
+            if gritlock_startup_accepted:
+                self._mqtt_receive_sequence = receive_sequence
 
         sequence_present, source_sequence = _ordering_value(
             payload,
@@ -2553,7 +2822,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             (sequence_present and source_sequence is _INVALID)
             or (timestamp_present and source_timestamp is _INVALID)
         ):
-            if rfid_event_scheduled:
+            if rfid_event_scheduled or gritlock_startup_accepted:
                 return True
             _LOGGER.debug(
                 "GRIT MQTT message rejected: invalid ordering metadata"
@@ -2569,26 +2838,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_type, normalized_message_type, payload
         )
         if updates is None:
-            if (
-                device_type == "trigger"
-                and root_message_type in _GRITLOCK_STARTUP_RESPONSE_TYPES
-            ):
-                receive_sequence = self._mqtt_receive_sequence + 1
-                accepted, state_changed = self._record_startup_hydration(
-                    device_type,
-                    normalized_device_id,
-                    root_message_type,
-                    payload,
-                    None,
-                    receive_sequence,
-                )
-                if accepted:
-                    self._mqtt_receive_sequence = receive_sequence
-                    if state_changed:
-                        self.async_update_listeners()
-                    self._wake_mqtt_state_waiters()
-                    return True
-            if rfid_event_scheduled:
+            if gritlock_startup_accepted or rfid_event_scheduled:
+                self._wake_mqtt_state_waiters()
                 return True
             _LOGGER.debug(
                 "GRIT MQTT message rejected: no supported state"
@@ -2617,7 +2868,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     or source_sequence <= previous_sequence
                 )
             ):
-                if rfid_event_scheduled:
+                if rfid_event_scheduled or gritlock_startup_accepted:
                     return True
                 _LOGGER.debug(
                     "GRIT MQTT message rejected: update is not newer"
@@ -2630,7 +2881,7 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     or source_timestamp <= previous_timestamp
                 )
             ):
-                if rfid_event_scheduled:
+                if rfid_event_scheduled or gritlock_startup_accepted:
                     return True
                 _LOGGER.debug(
                     "GRIT MQTT message rejected: update is not newer"
@@ -2639,7 +2890,8 @@ class GritHubCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         next_state = dict(previous_state)
         next_state.update(updates)
-        self._mqtt_receive_sequence += 1
+        if not gritlock_startup_accepted:
+            self._mqtt_receive_sequence += 1
         next_state[_LOCAL_RECEIVE_SEQUENCE_KEY] = (
             self._mqtt_receive_sequence
         )

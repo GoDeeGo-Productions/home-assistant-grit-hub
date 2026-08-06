@@ -57,14 +57,16 @@ custom integration; it does not provide or configure a broker. See
 [Architecture](docs/ARCHITECTURE.md) for the source-of-truth and confirmation
 rules.
 
-After the exact runtime subscription is ready, the integration requests current
-telemetry for each bounded known gate and eligible GRITLock trigger through the
-authenticated REST API. Fresh MQTT `/sts` or `/tel` responses hydrate startup
-state without assuming the broker has retained messages. A gate's bounded `p`
-position may be numeric or numeric text; `/req-tel` is never treated as state.
-GRITLock startup status is kept separate from `/gl` command-confirmation
-generations. The integration does not publish MQTT or operate equipment during
-startup hydration.
+After the exact runtime subscription is ready, the integration makes bounded
+authenticated telemetry requests. Gates retain a per-request `/sts` or `/tel`
+response boundary, and their compact `p` position may be numeric or numeric
+text; `/req-tel` is never state. GRITLock instead opens one bounded
+current-connection snapshot as soon as MQTT is ready. Strict trigger `/sts` or
+`/tel` `gls` received during that window may hydrate state without being
+caused by one particular REST request; `/tel` without `gls` is ignored.
+Refresh requests are best-effort stimuli, and startup status remains separate
+from `/gl` command confirmation. The integration does not publish MQTT or
+operate equipment during startup hydration.
 
 ## Entity summary
 
