@@ -133,6 +133,35 @@ Current-connection strict `/sts` or `/tel` `gls` can publish displayed state
 through the same observation record. `/tel` without `gls` is ignored. A startup
 observation cannot confirm a command, and reconnect rejects old evidence.
 
+## Jeff startup-promotion correction
+
+Live acceptance of exact merged commit `1b5b7e3` confirmed that Dion startup and
+both commands passed, while Jeff alone remained Unknown after startup until a
+native GRIT app change supplied live `/gl` authority. Jeff's restart capture
+contained four unanimous trigger `/sts gls=1` reports and one switch-trigger
+`/sts` report without `gls`.
+
+The strict parser already ignored the no-`gls` message, but usable REST
+`gritLockEnabled` metadata made the startup collector require every REST-named
+participant. If even one named trigger did not report current startup `gls`, the
+observed-reporter fallback and its 250 ms quiet wakeup were unreachable, so the
+valid unanimous observations expired at the five-second window without
+publication. Complete REST sets also used an immediate settlement path instead
+of the common quiet boundary.
+
+The corrective startup-only logic keeps an exact complete REST set when all of
+its members are represented. When REST metadata is empty, invalid, or not fully
+represented, it uses the bounded set of current valid `gls` reporters. Every
+valid observation replaces only that trigger's prior value and restarts one
+250 ms quiet boundary. Messages without `gls` do not enter the snapshot.
+Unanimous or disagreeing evidence publishes through the existing immutable
+observed-state channel before the full window expires; no valid reporter remains
+Unknown.
+
+The live `/gl` evaluator, pre-REST command boundary, command waiter, explicit
+Lock and Unlock mapping, and startup-source confirmation exclusion are unchanged.
+The Dion mixed-`gte` Lock and sparse/all-`gte=0` Unlock behavior therefore retain
+their existing architecture and deterministic regression coverage.
 Lock and Unlock still send explicit desired state to `PUT /api/hub/lockout`.
 The entity captures MQTT connection generation and receive sequence before REST,
 then waits against the latest observation for a matching naturally settled
@@ -164,18 +193,18 @@ do not make the superseded candidate acceptable for publication.
 
 ## Current corrective automated validation
 
-The v0.1.2 continuous observed-state refactor was validated without API, MQTT,
-Home Assistant, network, or physical-device access:
+The v0.1.2 candidate, including the Jeff startup-promotion correction, was
+validated without API, MQTT, Home Assistant, network, or physical-device access:
 
 - 10 end-to-end GRITLock parser/coordinator/entity pipeline tests passed.
-- 58 coordinator MQTT ingestion and continuous-state tests passed.
-- 60 coordinator reconciliation, waiter, disconnect, reconnect, and unload tests
-  passed.
-- 22 dedicated startup-hydration tests passed.
+- 27 dedicated startup-hydration tests passed.
+- 282 affected coordinator, entity, gate, RFID, collector, MQTT lifecycle,
+  startup, and GRITLock command tests passed.
 - 11 documentation tests passed.
-- 401 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
-- Python compilation/AST, JSON/YAML parsing, `git diff --check`, and the
-  sensitive-value scan passed.
+- 406 complete-suite tests passed, with 1 optional real-Paho smoke test skipped.
+- 33 tracked Python files passed compilation and AST parsing.
+- 3 tracked JSON files and 7 tracked YAML files parsed successfully.
+- `git diff --check` and the sensitive-value scan passed.
 
 These automated results do not replace the required Lock and Unlock acceptance
 on both live systems.

@@ -8,9 +8,10 @@ the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
 > **Release status:** a `v0.1.2` corrective patch candidate is in development.
-> The `v0.1.1` release was published, passed live verification on Jeff's
-> installation, but regressed Dion's installation and is superseded by the
-> corrective `v0.1.2` release process.
+> The `v0.1.1` release was published but is superseded by the corrective
+> `v0.1.2` release process. The current candidate preserves the corrected Dion
+> behavior and includes a bounded Jeff startup-promotion correction; final
+> two-system live acceptance is still required.
 > [`v0.1.1`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
 > remains the latest published release. This project is not a HACS
 > default-catalogue listing.
@@ -63,8 +64,11 @@ response boundary, and their compact `p` position may be numeric or numeric
 text; `/req-tel` is never state. GRITLock instead opens one bounded
 current-connection snapshot as soon as MQTT is ready. Strict trigger `/sts` or
 `/tel` `gls` received during that window may hydrate state without being
-caused by one particular REST request; `/tel` without `gls` is ignored.
-Refresh requests are best-effort stimuli. Startup status and naturally settled
+caused by one particular REST request; messages without `gls` are ignored. A
+complete REST participant set is exact only when every member reports current
+`gls`; otherwise the bounded observed reporters settle after 250 ms quiet,
+without waiting for the full five-second window. Refresh requests are
+best-effort stimuli. Startup status and naturally settled
 live `/gl` bursts publish through the same displayed-state field, but only a
 fresh `live_gl` observation newer than a pre-command sequence boundary can
 confirm explicit Lock or Unlock. There are no command generation IDs or retained

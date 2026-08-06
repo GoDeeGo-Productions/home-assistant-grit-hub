@@ -245,22 +245,29 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
         api.telemetry_entered = asyncio.Event()
         api.telemetry_release = asyncio.Event()
 
-        instance.set_mqtt_connected(True)
-        startup_task = instance._gritlock_startup_task
-        listener_updates = instance.listener_updates
-        self.assertTrue(instance.start_state_reconciliation())
-        await asyncio.wait_for(api.telemetry_entered.wait(), timeout=1)
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_STARTUP_QUIET_TIME",
+            0.01,
+        ):
+            instance.set_mqtt_connected(True)
+            startup_task = instance._gritlock_startup_task
+            listener_updates = instance.listener_updates
+            self.assertTrue(instance.start_state_reconciliation())
+            await asyncio.wait_for(api.telemetry_entered.wait(), timeout=1)
 
-        for trigger_id in ("trigger-one", "trigger-two"):
-            self.assertTrue(
-                instance.handle_mqtt_message(
-                    "hub-expected",
-                    "trigger",
-                    trigger_id,
-                    "sts",
-                    {"gls": int(locked), "sts": 1},
+            for trigger_id in ("trigger-one", "trigger-two"):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "sts",
+                        {"gls": int(locked), "sts": 1},
+                    )
                 )
-            )
+            self.assertIsNone(instance.gritlock_state)
+            await self.wait_for_gritlock_startup(instance)
 
         entity = LOCK_MODULE.GritHubSystemLock(instance)
         self.assertIs(instance.gritlock_state, locked)
@@ -292,21 +299,28 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             {"id": "trigger-two", "gritLockEnabled": True},
         ]
         instance, api = self.coordinator(devices)
-        instance.set_mqtt_connected(True)
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_STARTUP_QUIET_TIME",
+            0.01,
+        ):
+            instance.set_mqtt_connected(True)
 
-        self.assertEqual(api.telemetry_calls, [])
-        for trigger_id in ("trigger-one", "trigger-two"):
-            self.assertTrue(
-                instance.handle_mqtt_message(
-                    "hub-expected",
-                    "trigger",
-                    trigger_id,
-                    "sts",
-                    {"gls": 1},
+            self.assertEqual(api.telemetry_calls, [])
+            for trigger_id in ("trigger-one", "trigger-two"):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "sts",
+                        {"gls": 1},
+                    )
                 )
-            )
-        self.assertTrue(instance.gritlock_state)
+            self.assertIsNone(instance.gritlock_state)
+            await self.wait_for_gritlock_startup(instance)
 
+        self.assertTrue(instance.gritlock_state)
         self.assertTrue(instance.start_state_reconciliation())
         await self.wait_until_idle(instance)
         self.assertEqual(
@@ -391,21 +405,27 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         before_sequence = instance.mqtt_receive_sequence
-        instance.set_mqtt_connected(True)
-        self.assertTrue(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "trigger",
-                "trigger-one",
-                "sts",
-                {"sts": 1, "gls": 1, "sequence": 5},
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_STARTUP_QUIET_TIME",
+            0.01,
+        ):
+            instance.set_mqtt_connected(True)
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-one",
+                    "sts",
+                    {"sts": 1, "gls": 1, "sequence": 5},
+                )
             )
-        )
+            self.assertEqual(
+                instance.mqtt_receive_sequence,
+                before_sequence + 1,
+            )
+            await self.wait_for_gritlock_startup(instance)
 
-        self.assertEqual(
-            instance.mqtt_receive_sequence,
-            before_sequence + 1,
-        )
         self.assertTrue(instance.gritlock_state)
         self.assertIsNone(instance._gritlock_startup_snapshot)
 
@@ -504,7 +524,7 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(instance.gritlock_state)
 
-    async def test_rest_participants_ignore_nonparticipant_status(self):
+    async def test_complete_rest_participants_override_extra_reporter(self):
         devices = coordinator_tests._device_map()
         devices["gate"] = []
         devices["rfid"] = []
@@ -513,31 +533,43 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             {"id": "trigger-two", "gritLockEnabled": True},
             {"id": "trigger-other", "gritLockEnabled": False},
         ]
-        instance, _api = self.coordinator(devices)
-        instance.set_mqtt_connected(True)
-
-        self.assertFalse(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "trigger",
-                "trigger-other",
-                "sts",
-                {"gls": 0},
-            )
-        )
-        for trigger_id in ("trigger-one", "trigger-two"):
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_STARTUP_QUIET_TIME",
+            0.01,
+        ):
+            instance, _api = self.coordinator(devices)
+            instance.set_mqtt_connected(True)
             self.assertTrue(
                 instance.handle_mqtt_message(
                     "hub-expected",
                     "trigger",
-                    trigger_id,
+                    "trigger-other",
                     "sts",
-                    {"gls": 1},
+                    {"gls": 0},
                 )
             )
-        self.assertTrue(instance.gritlock_state)
+            for trigger_id in ("trigger-one", "trigger-two"):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "sts",
+                        {"gls": 1},
+                    )
+                )
+            self.assertIsNone(instance.gritlock_state)
+            await self.wait_for_gritlock_startup(instance)
 
-    async def test_missing_required_rest_participant_remains_unknown(self):
+        self.assertTrue(instance.gritlock_state)
+        self.assertEqual(
+            instance._gritlock_state_observation.participants,
+            frozenset({"trigger-one", "trigger-two"}),
+
+        )
+
+    async def test_missing_rest_participant_falls_back_to_observed_reporters(self):
         devices = coordinator_tests._device_map()
         devices["gate"] = []
         devices["rfid"] = []
@@ -548,10 +580,10 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(
                 coordinator_module,
-                "_GRITLOCK_STARTUP_WINDOW",
+                "_GRITLOCK_STARTUP_QUIET_TIME",
                 0.01,
             ),
-            self.assertLogs(coordinator_module._LOGGER.name, "WARNING") as logs,
+            mock.patch.object(coordinator_module._LOGGER, "warning") as warning,
         ):
             instance, _api = self.coordinator(devices)
             instance.set_mqtt_connected(True)
@@ -566,17 +598,180 @@ class StartupHydrationTests(unittest.IsolatedAsyncioTestCase):
             )
             await self.wait_for_gritlock_startup(instance)
 
-        self.assertIsNone(instance.gritlock_state)
-        self.assertFalse(LOCK_MODULE.GritHubSystemLock(instance).available)
-        combined = "\n".join(logs.output)
-        self.assertIn("startup state hydration was incomplete", combined)
-        for private_detail in (
-            "trigger-one",
-            "trigger-two",
-            "hub-expected",
-            "grit/",
+        self.assertTrue(instance.gritlock_state)
+        self.assertTrue(LOCK_MODULE.GritHubSystemLock(instance).available)
+        self.assertEqual(
+            instance._gritlock_state_observation.participants,
+            frozenset({"trigger-one"}),
+        )
+        warning.assert_not_called()
+
+    async def _hydrate_jeff_status_snapshot(self, locked: bool):
+        reporters = tuple(f"trigger-{index}" for index in range(4))
+        switch_trigger = "trigger-switch"
+        devices = coordinator_tests._device_map()
+        devices["gate"] = []
+        devices["rfid"] = []
+        devices["trigger"] = [
+            {"id": trigger_id, "gritLockEnabled": True}
+            for trigger_id in (*reporters, switch_trigger)
+        ]
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_STARTUP_QUIET_TIME",
+            0.01,
         ):
-            self.assertNotIn(private_detail, combined)
+            instance, _api = self.coordinator(devices)
+            instance.set_mqtt_connected(True)
+            listener_updates = instance.listener_updates
+            for trigger_id in reporters:
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "sts",
+                        {"gls": int(locked), "sts": 1},
+                    )
+                )
+            instance.handle_mqtt_message(
+                "hub-expected",
+                "trigger",
+                switch_trigger,
+                "sts",
+                {"sts": 1},
+            )
+            snapshot = instance._gritlock_startup_snapshot
+            self.assertIsNotNone(snapshot)
+            self.assertTrue(snapshot.rest_participants_usable)
+            self.assertEqual(set(snapshot.observations), set(reporters))
+            await self.wait_for_gritlock_startup(instance)
+
+        entity = LOCK_MODULE.GritHubSystemLock(instance)
+        self.assertIs(instance.gritlock_state, locked)
+        self.assertIs(entity.is_locked, locked)
+        self.assertTrue(entity.available)
+        self.assertEqual(instance.listener_updates, listener_updates + 1)
+        self.assertEqual(
+            instance._gritlock_state_observation.source,
+            coordinator_module._GRITLOCK_SOURCE_STARTUP,
+        )
+        self.assertEqual(
+            instance._gritlock_state_observation.participants,
+            frozenset(reporters),
+        )
+        return instance
+
+    async def test_jeff_status_reporters_promote_locked_after_quiet(self):
+        await self._hydrate_jeff_status_snapshot(True)
+
+    async def test_jeff_status_reporters_promote_unlocked_after_quiet(self):
+        await self._hydrate_jeff_status_snapshot(False)
+
+    async def test_invalid_rest_metadata_uses_observed_reporters(self):
+        devices = coordinator_tests._device_map()
+        devices["gate"] = []
+        devices["rfid"] = []
+        devices["trigger"] = [
+            {"id": "trigger-one"},
+            {"id": "trigger-two", "gritLockEnabled": "yes"},
+        ]
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_STARTUP_QUIET_TIME",
+            0.01,
+        ):
+            instance, _api = self.coordinator(devices)
+            instance.set_mqtt_connected(True)
+            snapshot = instance._gritlock_startup_snapshot
+            self.assertIsNotNone(snapshot)
+            self.assertFalse(snapshot.rest_participants_usable)
+            for trigger_id in ("trigger-one", "trigger-two"):
+                self.assertTrue(
+                    instance.handle_mqtt_message(
+                        "hub-expected",
+                        "trigger",
+                        trigger_id,
+                        "sts",
+                        {"gls": 1},
+                    )
+                )
+            await self.wait_for_gritlock_startup(instance)
+
+        self.assertTrue(instance.gritlock_state)
+        self.assertEqual(
+            instance._gritlock_state_observation.participants,
+            frozenset({"trigger-one", "trigger-two"}),
+        )
+
+    async def test_latest_valid_observation_restarts_quiet_boundary(self):
+        devices = coordinator_tests._device_map()
+        devices["gate"] = []
+        devices["rfid"] = []
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": False},
+            {"id": "trigger-two", "gritLockEnabled": False},
+        ]
+        instance, _api = self.coordinator(devices)
+        instance.set_mqtt_connected(True)
+        startup_task = instance._gritlock_startup_task
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=100.0,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-one",
+                    "sts",
+                    {"gls": 1},
+                )
+            )
+        with mock.patch.object(
+            coordinator_module.time,
+            "monotonic",
+            return_value=100.2,
+        ):
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-two",
+                    "sts",
+                    {"gls": 1},
+                )
+            )
+
+        snapshot = instance._gritlock_startup_snapshot
+        self.assertIsNotNone(snapshot)
+        self.assertFalse(
+            instance._settle_gritlock_startup_snapshot(snapshot, now=100.449)
+        )
+        self.assertTrue(
+            instance._settle_gritlock_startup_snapshot(snapshot, now=100.451)
+        )
+        if startup_task is not None:
+            await asyncio.wait_for(asyncio.shield(startup_task), timeout=1)
+        self.assertTrue(instance.gritlock_state)
+
+    async def test_repeated_ready_signal_does_not_duplicate_startup_task(self):
+        devices = coordinator_tests._device_map()
+        devices["gate"] = []
+        devices["rfid"] = []
+        devices["trigger"] = [
+            {"id": "trigger-one", "gritLockEnabled": False}
+        ]
+        instance, _api = self.coordinator(devices)
+        self.assertTrue(instance.set_mqtt_connected(True))
+        startup_task = instance._gritlock_startup_task
+        self.assertIsNotNone(startup_task)
+        self.assertFalse(instance.set_mqtt_connected(True))
+        self.assertIs(instance._gritlock_startup_task, startup_task)
+        instance._clear_gritlock_startup_snapshot()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(startup_task, timeout=1)
 
     async def test_fallback_snapshot_is_bounded(self):
         devices = coordinator_tests._device_map()

@@ -25,7 +25,12 @@ published on 2026-08-05; v0.1.2 is not tagged or published.
 - [x] Command generation IDs and retained command-result map removed
 - [x] Sparse one-frame all-`gte=0` Unlock and six-trigger all-`gte=0` behavior covered by deterministic tests
 - [x] Pre-REST connection/sequence boundary and lost-wakeup-safe waiting covered by deterministic tests
-- [ ] Corrective v0.1.2 GRITLock startup, Lock, Unlock, confirmation, and immediate entity state pass on both installations
+- [x] Exact merged `1b5b7e3` passed Dion startup, Lock, Unlock, confirmation, gates, and RFID
+- [x] Exact merged `1b5b7e3` reproduced Jeff-only Unknown startup until the first native `/gl` change
+- [x] Jeff restart evidence reduced to four unanimous `/sts gls=1` reporters plus one no-`gls` switch message
+- [x] REST-set incompleteness, unreachable fallback, and disabled quiet wakeup identified as the startup cause
+- [x] Bounded observed-reporter startup fallback and common 250 ms quiet settlement implemented offline
+- [x] Deterministic Jeff Locked/Unlocked startup and Dion startup/command regressions added- [ ] Corrective v0.1.2 GRITLock startup, Lock, Unlock, confirmation, and immediate entity state pass on both installations
 
 ## Corrective validation
 

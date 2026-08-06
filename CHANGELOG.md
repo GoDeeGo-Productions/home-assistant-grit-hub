@@ -24,10 +24,13 @@ versioning for public releases.
   REST participant metadata cannot redefine an active live burst. Incomplete
   evidence and command failure preserve the last valid state; complete
   disagreement and disconnect invalidate it.
-- Preserved bounded current-connection GRITLock startup hydration: strict
-  `/sts` or `/tel` `gls` can establish displayed state, `/tel` without `gls` is
-  ignored, and reconnect rejects prior-connection evidence. Gate and RFID
-  behavior is unchanged.
+- Corrected bounded current-connection GRITLock startup promotion when valid REST
+  participant metadata names a trigger that does not report current `/sts` or
+  `/tel` `gls`. A fully represented REST set remains exact; otherwise the latest
+  strict `gls` from at most 64 observed reporters settles after 250 ms quiet and
+  can publish before the five-second window expires. Messages without `gls` are
+  ignored. Dion behavior, live `/gl` evaluation, commands, gates, and RFID are
+  unchanged.
 
 ## 0.1.1 — 2026-08-05
 

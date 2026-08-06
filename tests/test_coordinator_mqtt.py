@@ -2356,18 +2356,27 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
             {"id": "trigger-0", "gritLockEnabled": True}
         ]
         instance = self.coordinator(FakeApi(), devices)
-        instance.set_mqtt_connected(True)
-        connection = instance.mqtt_connection_generation
-        boundary = instance.mqtt_receive_sequence
-        self.assertTrue(
-            instance.handle_mqtt_message(
-                "hub-expected",
-                "trigger",
-                "trigger-0",
-                "sts",
-                {"gls": 1},
+        with mock.patch.object(
+            coordinator_module,
+            "_GRITLOCK_STARTUP_QUIET_TIME",
+            0.001,
+        ):
+            instance.set_mqtt_connected(True)
+            connection = instance.mqtt_connection_generation
+            boundary = instance.mqtt_receive_sequence
+            self.assertTrue(
+                instance.handle_mqtt_message(
+                    "hub-expected",
+                    "trigger",
+                    "trigger-0",
+                    "sts",
+                    {"gls": 1},
+                )
             )
-        )
+            startup_task = instance._gritlock_startup_task
+            self.assertIsNotNone(startup_task)
+            await asyncio.wait_for(startup_task, timeout=1)
+
         self.assertIs(instance.gritlock_state, True)
         self.assertEqual(
             instance._gritlock_state_observation.source,
@@ -2381,7 +2390,6 @@ class CoordinatorReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 timeout=0.01,
             )
         )
-
     async def test_opposite_and_disagreement_fail_confirmation(self):
         for frames in (
             (("trigger-0", 0, 0),),

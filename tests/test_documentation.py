@@ -106,7 +106,7 @@ class DocumentationTests(unittest.TestCase):
             changelog,
         )
         self.assertIn(
-            "Preserved bounded current-connection GRITLock startup hydration",
+            "Corrected bounded current-connection GRITLock startup promotion",
             changelog,
         )
 
@@ -139,6 +139,12 @@ class DocumentationTests(unittest.TestCase):
             "implemented offline",
             "- [x] Command generation IDs and retained command-result map "
             "removed",
+            "- [x] REST-set incompleteness, unreachable fallback, and disabled "
+            "quiet wakeup identified as the startup cause",
+            "- [x] Bounded observed-reporter startup fallback and common 250 ms "
+            "quiet settlement implemented offline",
+            "- [x] Deterministic Jeff Locked/Unlocked startup and Dion startup/"
+            "command regressions added",
         ):
             self.assertIn(evidence_item, checklist_v011)
         for pending_item in (
@@ -361,7 +367,7 @@ class DocumentationTests(unittest.TestCase):
         for expected in (
             "exact runtime subscription is ready",
             "GRITLock instead opens one bounded",
-            "`/tel` without `gls` is ignored",
+            "messages without `gls` are ignored",
             "same displayed-state field",
             "The integration does not publish MQTT or operate equipment",
         ):
@@ -390,6 +396,17 @@ class DocumentationTests(unittest.TestCase):
             " ".join(architecture.split()),
         )
         self.assertIn("sparse valid one-frame burst", architecture)
+        self.assertIn(
+            "only when every member is represented by current valid `gls`",
+            " ".join(architecture.split()),
+        )
+        self.assertIn(
+            "not fully represented, the latest valid observations",
+            " ".join(architecture.split()),
+        )
+        self.assertIn(
+            "Every valid observation restarts one 250 ms quiet", architecture
+        )
         self.assertIn(
             "REST `gritLockEnabled` metadata does not mutate or redefine",
             architecture,
