@@ -7,14 +7,11 @@ GRIT Hub gates, RFID readers, GRITLock, collectors, and hub controls. It combine
 the authenticated GRIT REST API with subscribe-only MQTT state updates and is
 designed for installation through HACS as a custom integration.
 
-> **Release status:** a `v0.1.2` corrective patch candidate is in development.
-> The `v0.1.1` release was published but is superseded by the corrective
-> `v0.1.2` release process. The current candidate preserves the corrected Dion
-> behavior and includes a bounded Jeff startup-promotion correction; final
-> two-system live acceptance is still required.
-> [`v0.1.1`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
-> remains the latest published release. This project is not a HACS
-> default-catalogue listing.
+> **Release status:** `v0.1.2` is the latest prepared release and is ready for
+> publication after successful two-system live acceptance. It is not yet tagged
+> or published. The published `v0.1.1` release is superseded but remains the
+> latest published release until v0.1.2 publication. This project remains a HACS
+> Custom Repository and is not a default-catalogue listing.
 
 This project is experimental, provided as-is, and is not affiliated with,
 endorsed by, or supported by GRIT or GRIT Automation.
@@ -117,10 +114,10 @@ Custom Repository:
    **GRIT Hub**.
 
 The repository transfer to GoDeeGo Productions and the final URL are verified.
-[`v0.1.0`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.0)
-was published on 2026-08-04 after final live HACS Custom Repository acceptance
-against the transferred repository URL. See the full [Installation
-guide](docs/INSTALLATION.md).
+[`v0.1.1`](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
+is the latest published release. v0.1.2 is prepared after successful two-system
+live acceptance but has not yet been tagged or published. See the full
+[Installation guide](docs/INSTALLATION.md).
 
 ## Manual installation
 
@@ -157,6 +154,8 @@ overrides. The API token and MQTT password remain secret fields.
 - [Entity reference](docs/ENTITIES.md)
 - [Architecture and state authority](docs/ARCHITECTURE.md)
 - [Troubleshooting and safe log redaction](docs/TROUBLESHOOTING.md)
+- [v0.1.2 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.2.md)
+- [v0.1.2 release checklist](docs/RELEASE_CHECKLIST_v0.1.2.md)
 - [Superseded v0.1.1 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.1.md)
 - [Superseded v0.1.1 patch-release checklist](docs/RELEASE_CHECKLIST_v0.1.1.md)
 - [Historical v0.1.0 acceptance report](docs/ACCEPTANCE_REPORT_v0.1.0.md)
@@ -173,6 +172,9 @@ overrides. The API token and MQTT password remain secret fields.
 - The provisional read-only MQTT defaults are pending confirmation from GRIT's
   author. Installations that differ must use Advanced overrides.
 - MQTT is QoS 0 and has no per-device staleness timer.
+- A hub-level GRITLock change may occasionally fail to propagate to an individual
+  downstream trigger. That separate propagation-reliability issue is outside
+  v0.1.2 and is not treated as corrected by this release.
 - One config entry represents one API and MQTT hub identity; multi-hub behavior
   has not been broadly validated.
 - Dynamic device entity addition and removal requires an integration reload.

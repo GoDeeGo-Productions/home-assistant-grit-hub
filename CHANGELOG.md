@@ -3,34 +3,22 @@
 All notable project changes are recorded here. This project uses semantic
 versioning for public releases.
 
-## Unreleased
+## 0.1.2 — 2026-08-06
 
 ### Fixed
 
-- Replaced the GRITLock command-owned generation IDs and retained result map with
-  one continuous immutable observed-state channel. Startup `/sts` or `/tel`
-  `gls` and naturally quiet-settled live `/gl` bursts now publish through the
-  same displayed-state authority; startup evidence remains ineligible for
-  command confirmation.
-- GRITLock Lock and Unlock now capture the MQTT connection generation and
-  receive sequence before sending the explicit desired-state REST request, then
-  wait for a matching newer `live_gl` observation on that same channel. A
-  matching observation received while REST is still awaiting is eligible,
-  while HTTP success, stale state, startup status, disconnect, disagreement,
-  and timeout fail closed.
-- Live `/gl` participant selection is based only on the current bounded burst:
-  use the fresh `gte=1` subset when nonempty, otherwise use every fresh observed
-  all-`gte=0` trigger. Sparse one-frame all-`gte=0` evidence is supported and
-  REST participant metadata cannot redefine an active live burst. Incomplete
-  evidence and command failure preserve the last valid state; complete
-  disagreement and disconnect invalidate it.
-- Corrected bounded current-connection GRITLock startup promotion when valid REST
-  participant metadata names a trigger that does not report current `/sts` or
-  `/tel` `gls`. A fully represented REST set remains exact; otherwise the latest
-  strict `gls` from at most 64 observed reporters settles after 250 ms quiet and
-  can publish before the five-second window expires. Messages without `gls` are
-  ignored. Dion behavior, live `/gl` evaluation, commands, gates, and RFID are
-  unchanged.
+- Consolidated GRITLock startup status and quiet-settled live `/gl` evidence into
+  one continuous immutable observed-state channel.
+- Kept Lock and Unlock as explicit `PUT /api/hub/lockout` desired-state commands
+  and require a fresh matching post-command `/gl` observation on that same
+  channel for confirmation.
+- Added compatibility for Dion's mixed `gte=1` Lock and sparse/all-`gte=0`
+  Unlock patterns, plus Jeff's all-`gte=0` Lock and Unlock pattern.
+- Corrected bounded startup hydration for both Dion-style and Jeff-style trigger
+  status reporting while ignoring messages without strict binary `gls`.
+- Preserved prior valid state when evidence is incomplete or a command times out;
+  complete disagreement and MQTT disconnect continue to invalidate authority.
+- Preserved gate startup hydration and RFID startup/detail authority.
 
 ## 0.1.1 — 2026-08-05
 
@@ -45,8 +33,7 @@ versioning for public releases.
 
 Released as [GRIT Hub for Home Assistant v0.1.1](https://github.com/GoDeeGo-Productions/home-assistant-grit-hub/releases/tag/v0.1.1)
 on 2026-08-05. The release passed the all-`gte=0` installation but exposed a
-mixed-installation regression and is superseded by the corrective v0.1.2
-process.
+mixed-installation regression and is superseded by v0.1.2.
 
 ## 0.1.0 — 2026-08-04
 
