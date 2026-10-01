@@ -23,10 +23,10 @@ class ManifestTests(unittest.TestCase):
     def test_manifest_json_is_valid_object(self):
         self.assertIsInstance(self.manifest, dict)
 
-    def test_paho_requirement_is_exactly_pinned(self):
+    def test_paho_requirement_uses_minimum_version(self):
         self.assertEqual(
             self.manifest["requirements"],
-            ["paho-mqtt==2.1.0"],
+            ["paho-mqtt>=2.1.0"],
         )
 
     def test_home_assistant_mqtt_dependency_is_not_declared(self):
